@@ -400,4 +400,3 @@ func TestFrameBufferFlush(t *testing.T) {
 		t.Errorf("buffered after flush: got %d, want 0", fb.buffered())
 	}
 }
-

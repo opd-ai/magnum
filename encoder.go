@@ -172,4 +172,3 @@ func Decode(packet []byte) ([]int16, error) {
 	}
 	return samples, nil
 }
-

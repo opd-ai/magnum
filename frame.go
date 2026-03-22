@@ -89,4 +89,3 @@ func (fb *frameBuffer) flush() []int16 {
 	fb.samples = fb.samples[:0]
 	return frame
 }
-
