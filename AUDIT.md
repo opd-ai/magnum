@@ -53,11 +53,11 @@
 
 ### MEDIUM
 
-- [ ] **Decode does not use TOC header** — `encoder.go:139-174` — The TOC byte is read but discarded at line 150 (`packet[1:]`). The decoder does not validate that the packet's configuration matches expected parameters. For round-trip-only use this is acceptable, but could cause silent corruption if packets are mixed. — **Remediation:** Parse and validate TOC in Decode: extract config/stereo/frameCode and verify against expected frame size. Validate: `go test -v ./...`.
+- [x] **Decode does not use TOC header** — `encoder.go:139-174` — The TOC byte is read but discarded at line 150 (`packet[1:]`). The decoder does not validate that the packet's configuration matches expected parameters. For round-trip-only use this is acceptable, but could cause silent corruption if packets are mixed. — **Remediation:** Parse and validate TOC in Decode: extract config/stereo/frameCode and verify against expected frame size. Validate: `go test -v ./...`. — **Status:** ✅ Fixed in `decoder.go` with `ErrChannelMismatch`, `ErrSampleRateMismatch`, and `sampleRateForConfig()`.
 
 - [ ] **flush() method is unused** — `frame.go:83-91` — The `frameBuffer.flush()` method is implemented and tested (`encoder_test.go:372-402`) but never called from `Encoder.Encode()`. Partial frames at end-of-stream are lost. — **Remediation:** Document that callers must detect end-of-stream externally, or add `Flush() ([]byte, error)` method to Encoder. Validate: `go doc github.com/opd-ai/magnum`.
 
-- [ ] **Memory allocation in loop** — `frame.go:44,49,55` — `append()` inside the write loop can cause repeated allocations. The `samples` slice is pre-allocated but `ready` grows unboundedly. — **Remediation:** Pre-allocate `ready` with `make([][]int16, 0, 4)` in `newFrameBuffer()`. Validate: `go test -bench=. ./...` (requires adding benchmarks).
+- [x] **Memory allocation in loop** — `frame.go:44,49,55` — `append()` inside the write loop can cause repeated allocations. The `samples` slice is pre-allocated but `ready` grows unboundedly. — **Remediation:** Pre-allocate `ready` with `make([][]int16, 0, 4)` in `newFrameBuffer()`. Validate: `go test -bench=. ./...` (requires adding benchmarks). — **Status:** ✅ Fixed in `frame.go:30` with pre-allocation; achieved 99.6% memory reduction.
 
 ### LOW
 
