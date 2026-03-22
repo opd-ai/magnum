@@ -130,6 +130,73 @@ func TestEncodePartialFrame(t *testing.T) {
 	}
 }
 
+// TestEncoderFlush verifies that Flush returns a zero-padded frame for partial
+// buffered data, and nil when the buffer is empty.
+func TestEncoderFlush(t *testing.T) {
+	t.Parallel()
+
+	enc, err := NewEncoder(48000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Empty buffer: Flush returns nil.
+	packet, err := enc.Flush()
+	if err != nil {
+		t.Fatalf("Flush on empty buffer: unexpected error: %v", err)
+	}
+	if packet != nil {
+		t.Errorf("Flush on empty buffer: expected nil, got %d bytes", len(packet))
+	}
+
+	// Partial fill: 100 samples (less than 960 needed for 20 ms @ 48 kHz mono).
+	pcm := make([]int16, 100)
+	for i := range pcm {
+		pcm[i] = int16(i + 1) // non-zero values to verify they're preserved
+	}
+	_, err = enc.Encode(pcm)
+	if err != nil {
+		t.Fatalf("Encode partial: unexpected error: %v", err)
+	}
+
+	// Flush should return a packet with zero-padded frame.
+	packet, err = enc.Flush()
+	if err != nil {
+		t.Fatalf("Flush: unexpected error: %v", err)
+	}
+	if packet == nil {
+		t.Fatal("Flush: expected packet for partial frame, got nil")
+	}
+
+	// Decode and verify: first 100 samples should match input, rest should be zeros.
+	decoded, err := Decode(packet)
+	if err != nil {
+		t.Fatalf("Decode flushed packet: %v", err)
+	}
+	if len(decoded) != 960 {
+		t.Fatalf("Decoded length: got %d, want 960", len(decoded))
+	}
+	for i := 0; i < 100; i++ {
+		if decoded[i] != pcm[i] {
+			t.Errorf("sample[%d]: got %d, want %d", i, decoded[i], pcm[i])
+		}
+	}
+	for i := 100; i < 960; i++ {
+		if decoded[i] != 0 {
+			t.Errorf("zero-padded sample[%d]: got %d, want 0", i, decoded[i])
+		}
+	}
+
+	// After flush, buffer should be empty, so another Flush returns nil.
+	packet, err = enc.Flush()
+	if err != nil {
+		t.Fatalf("Flush after drain: unexpected error: %v", err)
+	}
+	if packet != nil {
+		t.Errorf("Flush after drain: expected nil, got %d bytes", len(packet))
+	}
+}
+
 // TestEncodeFrame verifies that a complete 20 ms mono frame produces a
 // non-empty packet with a valid TOC header.
 func TestEncodeFrame(t *testing.T) {
@@ -231,6 +298,62 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDecodeWithInfoReturnsStereoFlag verifies that DecodeWithInfo correctly
+// returns the stereo flag from the TOC header for both mono and stereo packets.
+func TestDecodeWithInfoReturnsStereoFlag(t *testing.T) {
+	t.Parallel()
+
+	// Test mono packet.
+	encMono, err := NewEncoder(48000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pcmMono := make([]int16, 960)
+	for i := range pcmMono {
+		pcmMono[i] = int16(i % 1000)
+	}
+	packetMono, err := encMono.Encode(pcmMono)
+	if err != nil {
+		t.Fatalf("Encode mono: %v", err)
+	}
+
+	samplesMono, stereoMono, err := DecodeWithInfo(packetMono)
+	if err != nil {
+		t.Fatalf("DecodeWithInfo mono: %v", err)
+	}
+	if stereoMono {
+		t.Error("DecodeWithInfo mono: expected stereo=false, got true")
+	}
+	if len(samplesMono) != len(pcmMono) {
+		t.Errorf("DecodeWithInfo mono: got %d samples, want %d", len(samplesMono), len(pcmMono))
+	}
+
+	// Test stereo packet.
+	encStereo, err := NewEncoder(48000, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pcmStereo := make([]int16, 1920) // 960 samples * 2 channels
+	for i := range pcmStereo {
+		pcmStereo[i] = int16(i % 1000)
+	}
+	packetStereo, err := encStereo.Encode(pcmStereo)
+	if err != nil {
+		t.Fatalf("Encode stereo: %v", err)
+	}
+
+	samplesStereo, stereoStereo, err := DecodeWithInfo(packetStereo)
+	if err != nil {
+		t.Fatalf("DecodeWithInfo stereo: %v", err)
+	}
+	if !stereoStereo {
+		t.Error("DecodeWithInfo stereo: expected stereo=true, got false")
+	}
+	if len(samplesStereo) != len(pcmStereo) {
+		t.Errorf("DecodeWithInfo stereo: got %d samples, want %d", len(samplesStereo), len(pcmStereo))
+	}
+}
+
 // TestEncodeMultipleFrames verifies that feeding more than one frame's worth
 // of samples in a single Encode call does not silently drop the extra frame.
 // The second frame must be retrievable by a subsequent Encode call.
@@ -308,6 +431,23 @@ func TestDecodeShortPacket(t *testing.T) {
 	}
 	if !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Errorf("Decode: expected io.ErrUnexpectedEOF for TOC-only packet, got: %v", err)
+	}
+}
+
+// TestDecodeInvalidFrameCode verifies that Decode rejects packets with
+// multi-frame encoding (frame codes 1, 2, 3).
+func TestDecodeInvalidFrameCode(t *testing.T) {
+	t.Parallel()
+
+	// Frame codes 1, 2, 3 are stored in bits 1-0 of the TOC byte.
+	// Use a minimal valid-looking packet (TOC byte + some flate data).
+	for _, fc := range []byte{1, 2, 3} {
+		tocByte := byte(ConfigurationCELTFB20ms<<3) | fc // config 31, frame code fc
+		packet := []byte{tocByte, 0x00}                  // minimal packet with invalid frame code
+		_, err := Decode(packet)
+		if !errors.Is(err, ErrUnsupportedFrameCode) {
+			t.Errorf("Decode with frame code %d: expected ErrUnsupportedFrameCode, got: %v", fc, err)
+		}
 	}
 }
 
@@ -398,5 +538,77 @@ func TestFrameBufferFlush(t *testing.T) {
 	// After flush the partial buffer should be empty.
 	if fb.buffered() != 0 {
 		t.Errorf("buffered after flush: got %d, want 0", fb.buffered())
+	}
+}
+
+// BenchmarkEncode48kMono measures encoding performance for 48 kHz mono audio.
+func BenchmarkEncode48kMono(b *testing.B) {
+	enc, err := NewEncoder(48000, 1)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	// Pre-allocate a 20 ms frame (960 samples at 48 kHz mono).
+	pcm := make([]int16, 960)
+	for i := range pcm {
+		pcm[i] = int16(i % 1000)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := enc.Encode(pcm)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkEncode48kStereo measures encoding performance for 48 kHz stereo audio.
+func BenchmarkEncode48kStereo(b *testing.B) {
+	enc, err := NewEncoder(48000, 2)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	// Pre-allocate a 20 ms frame (1920 samples at 48 kHz stereo).
+	pcm := make([]int16, 1920)
+	for i := range pcm {
+		pcm[i] = int16(i % 1000)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := enc.Encode(pcm)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkDecode measures decoding performance for 48 kHz mono audio.
+func BenchmarkDecode(b *testing.B) {
+	enc, err := NewEncoder(48000, 1)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	pcm := make([]int16, 960)
+	for i := range pcm {
+		pcm[i] = int16(i % 1000)
+	}
+	packet, err := enc.Encode(pcm)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := Decode(packet)
+		if err != nil {
+			b.Fatal(err)
+		}
 	}
 }

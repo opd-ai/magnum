@@ -27,6 +27,7 @@ func newFrameBuffer(sampleRate, channels int) *frameBuffer {
 	frameSize := sampleRate * frameDurationMs / 1000 * channels
 	return &frameBuffer{
 		samples:   make([]int16, 0, frameSize),
+		ready:     make([][]int16, 0, 4), // pre-allocate for typical streaming use
 		frameSize: frameSize,
 	}
 }

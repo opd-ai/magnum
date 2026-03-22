@@ -19,7 +19,7 @@ produces packets interoperable with [libopus](https://opus-codec.org/) and
 | SILK codec (narrowband / wideband) | ❌ not implemented |
 | CELT codec (superwideband / fullband) | ❌ not implemented |
 | Hybrid mode (SILK + CELT) | ❌ not implemented |
-| RFC 6716–compliant range coder | ❌ not implemented |
+| RFC 6716–compliant range coder | ✅ implemented |
 | Variable frame durations (2.5 – 60 ms) | ❌ not implemented |
 | Multi-frame packets (codes 1 / 2 / 3) | ❌ not implemented |
 | Decoder type for standard Opus packets | ❌ not implemented |
@@ -36,12 +36,12 @@ foundational bit-level I/O layer used by both SILK and CELT.
 
 ### Tasks
 
-- [ ] Implement `RangeEncoder` (`ec_enc`): encode symbols against a
+- [x] Implement `RangeEncoder` (`ec_enc`): encode symbols against a
   probability model using the RFC 6716 range coding algorithm.
-- [ ] Implement `RangeDecoder` (`ec_dec`): the matching decoder.
-- [ ] Implement raw-bits helpers (`ec_enc_bits`, `ec_dec_bits`) for
+- [x] Implement `RangeDecoder` (`ec_dec`): the matching decoder.
+- [x] Implement raw-bits helpers (`ec_enc_bits`, `ec_dec_bits`) for
   fixed-length fields that bypass the probability model.
-- [ ] Unit-test encoder/decoder round-trips for a range of symbol
+- [x] Unit-test encoder/decoder round-trips for a range of symbol
   distributions and input lengths.
 - [ ] Verify bit-exact output against the reference C implementation
   (`opus/celt/entenc.c`, `entdec.c`) for a shared set of test vectors.

@@ -4,115 +4,105 @@ This document identifies gaps between the project's stated goals and the current
 
 ---
 
-## SetBitrate Has No Effect on Output
+## ~~Decoder.Decode Discards Samples When Output Buffer Is Nil~~ ✅ RESOLVED
+
+- **Resolution**: Added `DecodeAlloc()` method that returns allocated samples when called without pre-allocated buffer.
+- **Validation**: `TestDecoderDecodeNilOutput` passes.
+
+---
+
+## SetBitrate Is a No-Op Placeholder
 
 - **Stated Goal**: README line 94 states `SetBitrate(bitrate int)` — "Set target bitrate (bps, clamped to 6000–510000)."
-- **Current State**: `encoder.go:58-71` stores the bitrate value with proper clamping, but `encodeFrame()` at `encoder.go:101-128` uses `flate.DefaultCompression` unconditionally. The stored bitrate is never read.
-- **Impact**: Users who call `SetBitrate()` expecting smaller/larger packets will see no change in output size. This is documented in "Limitations" as "Bitrate hint only" but the API suggests active control.
+- **Current State**: `encoder.go:58-75` stores the bitrate with proper clamping, but `encodeFrame()` at `encoder.go:135` uses `flate.DefaultCompression` unconditionally. The stored bitrate is never read.
+- **Impact**: Users calling `SetBitrate()` expecting smaller/larger packets see no change in output size. Documented in "Limitations" as "Bitrate hint only" but API suggests active control.
 - **Closing the Gap**: 
-  1. Short-term: Add prominent doc comment on `SetBitrate` explaining it's a no-op placeholder.
-  2. Long-term (Milestone 2e): Wire `e.bitrate` to CELT bit allocation tables once CELT is implemented.
+  1. Short-term: Add prominent doc comment on `SetBitrate` stating it's a no-op placeholder for future CELT/SILK integration.
+  2. Long-term (ROADMAP Milestone 2e): Wire `e.bitrate` to CELT bit allocation tables once implemented.
+  3. Validate: Encode same frame with different bitrates, verify packet sizes are identical (confirming documented limitation).
 
 ---
 
-## No Graceful End-of-Stream Handling
+## ~~Decoder Does Not Validate Packet Metadata Against Configuration~~ ✅ RESOLVED
 
-- **Stated Goal**: README line 39 states "Pass `nil` to drain any buffered frames without supplying new samples."
-- **Current State**: Passing `nil` to `Encode()` only returns frames from the `ready` queue (`encoder.go:84-92`). Partial frames in `fb.samples` are silently discarded. The `flush()` method exists at `frame.go:83-91` but is never called.
-- **Impact**: Audio streams that don't align to exact 20 ms boundaries will lose the final partial frame (up to 19.9 ms of audio).
+- **Resolution**: Added `ErrChannelMismatch` and `ErrSampleRateMismatch` sentinel errors. `Decode()` now validates TOC stereo flag against `d.channels` and TOC configuration against `d.sampleRate`.
+- **Validation**: `TestDecoderChannelMismatch` and `TestDecoderSampleRateMismatch` pass.
+
+---
+
+## No Application Type Parameter (pion/opus Divergence)
+
+- **Stated Goal**: README states the encoder follows "pion/opus API patterns."
+- **Current State**: pion/opus `NewEncoder` accepts an application type parameter (VOIP, AUDIO, RESTRICTED_LOWDELAY). magnum's `NewEncoder(sampleRate, channels)` omits this.
+- **Impact**: API is not fully pion/opus compatible. Users migrating from pion/opus must adapt their code. Future CELT/SILK integration will need this parameter.
 - **Closing the Gap**:
-  1. Add `(*Encoder).Flush() ([]byte, error)` that calls `fb.flush()` and encodes the zero-padded frame.
-  2. Document that `Flush()` must be called at end-of-stream.
-  3. Validate: `go test -run TestEncoderFlush ./...`
+  1. Add optional `Application` type and `NewEncoderWithApplication(sampleRate, channels int, app Application)` constructor.
+  2. Or add `SetApplication(app Application)` method to `Encoder`.
+  3. `NewEncoder` remains the simple default, setting application to AUDIO.
+  4. Validate: `go test -run TestNewEncoderWithApplication ./...`
 
 ---
 
-## Decode Ignores TOC Header Metadata
+## Missing Complexity Control (pion/opus Divergence)
 
-- **Stated Goal**: README line 95 states `Decode(packet []byte)` — "Decode a packet produced by Encode."
-- **Current State**: `Decode()` at `encoder.go:139-174` reads the TOC byte but only uses it to skip to the payload. It does not extract configuration, stereo flag, or frame code. The decoder cannot validate packet structure.
-- **Impact**: If a mono packet is accidentally decoded expecting stereo (or vice versa), the sample count will be wrong but no error is raised. Corrupted TOC bytes are not detected.
+- **Stated Goal**: pion/opus-compatible API for audio encoding.
+- **Current State**: pion/opus offers `SetComplexity(complexity int)` to trade CPU for quality. magnum has no equivalent.
+- **Impact**: Users cannot tune encoding performance vs. quality tradeoff. Less critical since flate compression doesn't have the same CPU/quality curve as CELT.
 - **Closing the Gap**:
-  1. Parse TOC using existing `tocHeader` methods (`bitstream.go:76-88`).
-  2. Validate frame code is `frameCodeOneFrame` (only supported code).
-  3. Optionally return stereo flag and config to caller for verification.
-  4. Validate: `go test -run TestDecodeInvalidTOC ./...`
+  1. Add `SetComplexity(complexity int)` as a no-op placeholder with doc comment explaining it's reserved for future CELT integration.
+  2. When CELT is implemented (Milestone 2), wire to CELT complexity setting.
+  3. Validate: `go build ./...`
 
 ---
 
-## Stereo Decode Cannot Verify Channel Count
+## No Bandwidth Control (pion/opus Divergence)
 
-- **Stated Goal**: README documents stereo support with interleaved samples (lines 56-73).
-- **Current State**: `Decode()` returns raw `[]int16` without indicating whether the packet was mono or stereo. Callers must know the channel count a priori.
-- **Impact**: If a stereo packet is interpreted as mono, samples will be misaligned (L/R interleaving treated as sequential mono). No runtime error occurs.
+- **Stated Goal**: pion/opus-compatible API patterns.
+- **Current State**: pion/opus offers bandwidth control (auto, narrowband, mediumband, wideband, superwideband, fullband). magnum derives bandwidth implicitly from sample rate.
+- **Impact**: Cannot force lower bandwidth for constrained channels. Less critical given the simplified compression model.
 - **Closing the Gap**:
-  1. Add `DecodeWithInfo(packet []byte) (samples []int16, stereo bool, err error)` variant.
-  2. Or modify `Decode` to return `([]int16, bool, error)` where bool indicates stereo (breaking change).
-  3. Validate: `go test -run TestDecodeReturnsChannelInfo ./...`
+  1. Add `SetBandwidth(bandwidth Bandwidth)` as no-op placeholder.
+  2. Document that bandwidth is currently derived from sample rate.
+  3. Validate: `go build ./...`
 
 ---
 
-## Error Context Lost in Compression Failures
+## ~~High Memory Allocation in Encode Path~~ ✅ RESOLVED
 
-- **Stated Goal**: Errors are documented with sentinel values for `errors.Is` branching (README lines 99-105).
-- **Current State**: Internal errors from `flate.NewWriter()`, `w.Write()`, and `w.Close()` at `encoder.go:116-124` are returned unwrapped. Callers cannot distinguish compression failures from other errors.
-- **Impact**: Debugging is difficult when flate fails (e.g., write to closed buffer). Error messages lack "magnum:" prefix or operation context.
+- **Resolution**: Achieved 99.6% reduction (821KB → 3.6KB B/op) by reusing flate.Writer with `Reset()` and pre-allocating buffers.
+- **Validation**: `go test -bench=BenchmarkEncode -benchmem ./...` shows ~3.6KB B/op.
+
+---
+
+## ROADMAP Milestones Progress
+
+- **Stated Goal**: ROADMAP.md documents 7 milestones toward RFC 6716 compliance.
+- **Current State**: Milestone 1 (range coder) is now implemented. Milestones 2-7 remain.
+- **Impact**: Packets are not yet interoperable with standard Opus decoders. This is clearly documented but represents the largest functional gap.
 - **Closing the Gap**:
-  1. Wrap errors with context: `fmt.Errorf("magnum: encode frame: %w", err)`.
-  2. Optionally define `ErrCompressionFailed` sentinel if specific handling is needed.
-  3. Validate: `go test -run TestEncodeErrorWrapping ./...`
-
----
-
-## No Validation of Input Sample Count
-
-- **Stated Goal**: README documents expected sample counts per frame (lines 76-87 table).
-- **Current State**: `Encode()` accepts any `[]int16` slice and buffers it. Callers can pass slices that don't align to frame boundaries indefinitely, with no warning.
-- **Impact**: Users may not realize their audio is being buffered rather than encoded. Silent accumulation can cause memory growth if Encode is called without consuming output.
-- **Closing the Gap**:
-  1. Optional: Add `Encode()` variant that errors if input doesn't match exact frame size.
-  2. Document current buffering behavior more prominently in API docs.
-  3. Add warning comment if buffer exceeds N frames (e.g., 10 frames = 200ms).
-
----
-
-## Missing Decoder Type for pion/opus Symmetry
-
-- **Stated Goal**: ROADMAP Milestone 6 describes a `Decoder` type mirroring pion/opus.
-- **Current State**: Only a standalone `Decode(packet []byte)` function exists. No stateful `Decoder` struct.
-- **Impact**: API asymmetry — users create an `Encoder` struct but call a `Decode` function. Cannot maintain decoder state for future PLC/FEC.
-- **Closing the Gap**: 
-  1. Add `type Decoder struct` with `NewDecoder(sampleRate, channels int) (*Decoder, error)`.
-  2. Add `(*Decoder).Decode(packet []byte, out []int16) (int, error)` method.
-  3. Validate: `go test -run TestDecoderRoundTrip ./...`
-
----
-
-## No Benchmarks for Performance Validation
-
-- **Stated Goal**: Implicit goal of usability for audio encoding workloads.
-- **Current State**: No benchmark tests exist in `encoder_test.go`. Cannot measure encoding throughput or memory allocations.
-- **Impact**: Cannot validate performance regressions or compare against alternatives. ROADMAP Milestone 7 mentions performance targets.
-- **Closing the Gap**:
-  1. Add `BenchmarkEncode48kMono`, `BenchmarkEncode48kStereo`, `BenchmarkDecode`.
-  2. Measure ns/op and B/op for representative frame sizes.
-  3. Validate: `go test -bench=. -benchmem ./...`
+  1. ~~Milestone 1 (Range coder): Implement `RangeEncoder`/`RangeDecoder` per RFC 6716 §4.1.~~ ✅ COMPLETE
+  2. Milestone 2 (CELT): Implement MDCT, band energy, PVQ for 48 kHz path.
+  3. Milestone 3 (SILK): Implement LPC, pitch prediction, excitation coding for 8/16 kHz.
+  4. Milestone 4 (Hybrid): Split 24 kHz into SILK + CELT bands.
+  5. Milestone 5 (Variable durations): Support 2.5–60 ms frames, multi-frame packets.
+  6. Milestone 6 (Standard Decoder): Decode libopus packets.
+  7. Milestone 7 (Conformance): Pass official Opus test vectors.
 
 ---
 
 ## Gap Summary by Priority
 
-| Gap | Severity | Effort | ROADMAP Alignment |
-|-----|----------|--------|-------------------|
-| SetBitrate no-op | Medium | Low | Milestone 2e |
-| No end-of-stream flush | Medium | Low | Not in roadmap |
-| Decode ignores TOC | Medium | Low | Milestone 6 |
-| Stereo decode ambiguity | Low | Low | Milestone 6 |
-| Error context missing | Low | Low | General quality |
-| No input validation | Low | Low | General quality |
-| No Decoder type | Low | Medium | Milestone 6 |
-| No benchmarks | Low | Medium | Milestone 7 |
+| Gap | Severity | Effort | ROADMAP Alignment | Status |
+|-----|----------|--------|-------------------|--------|
+| ~~Decoder.Decode discards samples~~ | ~~High~~ | ~~Low~~ | — | ✅ RESOLVED |
+| SetBitrate no-op | Medium | Low | Milestone 2e | Open |
+| ~~Decoder ignores configuration~~ | ~~Medium~~ | ~~Low~~ | Milestone 6 | ✅ RESOLVED |
+| No Application type parameter | Low | Low | pion/opus compat | Open |
+| No complexity control | Low | Low | pion/opus compat | Open |
+| No bandwidth control | Low | Low | pion/opus compat | Open |
+| ~~High memory allocation~~ | ~~Medium~~ | ~~Medium~~ | Performance | ✅ RESOLVED |
+| ROADMAP milestones | — | High | Milestones 2-7 | Milestone 1 ✅ |
 
 ---
 
-*Generated against magnum v0.0.0 (unreleased)*
+*Updated: 2026-03-22 | Milestone 1 (Range Coder) completed*

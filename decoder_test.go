@@ -135,6 +135,43 @@ func TestDecoderDecodeNilOutput(t *testing.T) {
 	}
 }
 
+// TestDecoderDecodeAlloc verifies that DecodeAlloc returns samples directly.
+func TestDecoderDecodeAlloc(t *testing.T) {
+	t.Parallel()
+
+	enc, err := NewEncoder(48000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec, err := NewDecoder(48000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pcm := make([]int16, 960)
+	for i := range pcm {
+		pcm[i] = int16(i % 1000)
+	}
+	packet, err := enc.Encode(pcm)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+
+	// DecodeAlloc returns the samples directly.
+	samples, err := dec.DecodeAlloc(packet)
+	if err != nil {
+		t.Fatalf("DecodeAlloc: %v", err)
+	}
+	if len(samples) != 960 {
+		t.Errorf("DecodeAlloc: got %d samples, want 960", len(samples))
+	}
+	for i, want := range pcm {
+		if samples[i] != want {
+			t.Errorf("sample[%d]: got %d, want %d", i, samples[i], want)
+		}
+	}
+}
+
 // TestDecoderAccessors verifies the SampleRate and Channels accessor methods.
 func TestDecoderAccessors(t *testing.T) {
 	t.Parallel()
@@ -149,5 +186,84 @@ func TestDecoderAccessors(t *testing.T) {
 	}
 	if dec.Channels() != 2 {
 		t.Errorf("Channels: got %d, want 2", dec.Channels())
+	}
+}
+
+// TestDecoderChannelMismatch verifies that Decoder.Decode returns
+// ErrChannelMismatch when the packet's stereo flag doesn't match.
+func TestDecoderChannelMismatch(t *testing.T) {
+	t.Parallel()
+
+	// Create a stereo encoder and mono decoder.
+	enc, err := NewEncoder(48000, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec, err := NewDecoder(48000, 1) // mono decoder
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Encode a stereo packet.
+	pcm := make([]int16, 1920) // stereo
+	for i := range pcm {
+		pcm[i] = int16(i % 1000)
+	}
+	packet, err := enc.Encode(pcm)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+
+	// Decode should fail with ErrChannelMismatch.
+	out := make([]int16, 1920)
+	_, err = dec.Decode(packet, out)
+	if !errors.Is(err, ErrChannelMismatch) {
+		t.Errorf("Decode: expected ErrChannelMismatch, got: %v", err)
+	}
+
+	// DecodeAlloc should also fail.
+	_, err = dec.DecodeAlloc(packet)
+	if !errors.Is(err, ErrChannelMismatch) {
+		t.Errorf("DecodeAlloc: expected ErrChannelMismatch, got: %v", err)
+	}
+}
+
+// TestDecoderSampleRateMismatch verifies that Decoder.Decode returns
+// ErrSampleRateMismatch when the packet's configuration indicates a different
+// sample rate.
+func TestDecoderSampleRateMismatch(t *testing.T) {
+	t.Parallel()
+
+	// Create a 48kHz encoder and 16kHz decoder.
+	enc, err := NewEncoder(48000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec, err := NewDecoder(16000, 1) // different sample rate
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Encode a 48kHz packet.
+	pcm := make([]int16, 960)
+	for i := range pcm {
+		pcm[i] = int16(i % 1000)
+	}
+	packet, err := enc.Encode(pcm)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+
+	// Decode should fail with ErrSampleRateMismatch.
+	out := make([]int16, 960)
+	_, err = dec.Decode(packet, out)
+	if !errors.Is(err, ErrSampleRateMismatch) {
+		t.Errorf("Decode: expected ErrSampleRateMismatch, got: %v", err)
+	}
+
+	// DecodeAlloc should also fail.
+	_, err = dec.DecodeAlloc(packet)
+	if !errors.Is(err, ErrSampleRateMismatch) {
+		t.Errorf("DecodeAlloc: expected ErrSampleRateMismatch, got: %v", err)
 	}
 }

@@ -5,17 +5,7 @@ import (
 	"compress/flate"
 	"encoding/binary"
 	"fmt"
-	"io"
 )
-
-// maxDecompressedBytes is the maximum number of bytes that Decode will
-// decompress from a single packet. Packets whose decompressed payload exceeds
-// this limit are rejected with ErrPayloadTooLarge to prevent memory
-// exhaustion from malformed or malicious inputs (zip-bomb mitigation).
-//
-// 65536 bytes comfortably covers the largest possible legitimate frame:
-// 48 kHz × 60 ms × 2 channels × 2 bytes/sample = 11 520 bytes.
-const maxDecompressedBytes = 65536
 
 // Encoder is a simplified pure-Go Opus-compatible audio encoder.
 //
@@ -29,6 +19,11 @@ type Encoder struct {
 	channels   int
 	bitrate    int
 	buffer     *frameBuffer
+
+	// Reusable buffers to reduce allocations.
+	rawPCM    []byte        // pre-allocated buffer for PCM serialization
+	outputBuf bytes.Buffer  // reusable output buffer
+	flateW    *flate.Writer // reusable flate compressor
 }
 
 // NewEncoder creates a new Encoder for the given sample rate and channel count.
@@ -36,19 +31,33 @@ type Encoder struct {
 // Supported sample rates: 8000, 16000, 24000, 48000 Hz.
 // Supported channel counts: 1 (mono) or 2 (stereo).
 func NewEncoder(sampleRate, channels int) (*Encoder, error) {
-	switch sampleRate {
-	case 8000, 16000, 24000, 48000:
-	default:
+	if !isValidSampleRate(sampleRate) {
 		return nil, ErrUnsupportedSampleRate
 	}
 	if channels < 1 || channels > 2 {
 		return nil, ErrUnsupportedChannelCount
 	}
+
+	fb := newFrameBuffer(sampleRate, channels)
+
+	// Pre-allocate rawPCM buffer for one frame (frameSize * 2 bytes per sample).
+	rawPCM := make([]byte, fb.frameSize*2)
+
+	// Initialize the flate writer with a dummy buffer; we'll reset it per frame.
+	var outputBuf bytes.Buffer
+	flateW, err := flate.NewWriter(&outputBuf, flate.DefaultCompression)
+	if err != nil {
+		return nil, fmt.Errorf("magnum: new encoder: %w", err)
+	}
+
 	return &Encoder{
 		sampleRate: sampleRate,
 		channels:   channels,
 		bitrate:    64000, // default: 64 kbps
-		buffer:     newFrameBuffer(sampleRate, channels),
+		buffer:     fb,
+		rawPCM:     rawPCM,
+		outputBuf:  outputBuf,
+		flateW:     flateW,
 	}, nil
 }
 
@@ -96,6 +105,21 @@ func (e *Encoder) Encode(pcm []int16) ([]byte, error) {
 	return e.encodeFrame(frame)
 }
 
+// Flush encodes any remaining buffered samples as a zero-padded final frame.
+//
+// Call Flush at end-of-stream to ensure partial frames are not lost. The
+// returned packet contains a full-length frame with the partial samples at
+// the beginning and zeros filling the remainder.
+//
+// Returns nil (with no error) when no partial frame is buffered.
+func (e *Encoder) Flush() ([]byte, error) {
+	frame := e.buffer.flush()
+	if frame == nil {
+		return nil, nil
+	}
+	return e.encodeFrame(frame)
+}
+
 // encodeFrame encodes a single audio frame into an Opus-structured packet.
 //
 // Packet layout:
@@ -107,79 +131,26 @@ func (e *Encoder) encodeFrame(frame []int16) ([]byte, error) {
 	config := configForSampleRate(e.sampleRate)
 	toc := newTOCHeader(config, isStereo, frameCodeOneFrame)
 
-	// Serialise the frame as little-endian int16 bytes.
-	rawPCM := make([]byte, len(frame)*2)
+	// Serialise the frame as little-endian int16 bytes using pre-allocated buffer.
 	for i, sample := range frame {
-		binary.LittleEndian.PutUint16(rawPCM[i*2:], uint16(sample))
+		binary.LittleEndian.PutUint16(e.rawPCM[i*2:], uint16(sample))
 	}
 
-	// Write TOC byte followed by flate-compressed PCM into the output buffer.
-	var buf bytes.Buffer
-	buf.WriteByte(byte(toc))
+	// Reset and reuse the output buffer.
+	e.outputBuf.Reset()
+	e.outputBuf.WriteByte(byte(toc))
 
-	w, err := flate.NewWriter(&buf, flate.DefaultCompression)
-	if err != nil {
+	// Reset the flate writer to write to our output buffer.
+	e.flateW.Reset(&e.outputBuf)
+	if _, err := e.flateW.Write(e.rawPCM[:len(frame)*2]); err != nil {
 		return nil, fmt.Errorf("magnum: encode frame: %w", err)
 	}
-	if _, err = w.Write(rawPCM); err != nil {
-		return nil, fmt.Errorf("magnum: encode frame: %w", err)
-	}
-	if err = w.Close(); err != nil {
+	if err := e.flateW.Close(); err != nil {
 		return nil, fmt.Errorf("magnum: encode frame: %w", err)
 	}
 
-	return buf.Bytes(), nil
-}
-
-// Decode decodes an Opus packet that was produced by [Encoder.Encode].
-//
-// This is the inverse of Encode and is provided for round-trip testing.
-// It does not decode packets produced by standard Opus encoders.
-//
-// Returns [ErrTooShortForTableOfContentsHeader] if the packet is completely
-// empty, [io.ErrUnexpectedEOF] if only the TOC byte is present without a
-// payload, [ErrUnsupportedFrameCode] if the packet uses multi-frame encoding,
-// and [ErrPayloadTooLarge] if the decompressed payload exceeds
-// maxDecompressedBytes.
-func Decode(packet []byte) ([]int16, error) {
-	if len(packet) < 1 {
-		return nil, ErrTooShortForTableOfContentsHeader
-	}
-	if len(packet) == 1 {
-		return nil, io.ErrUnexpectedEOF
-	}
-
-	// Parse and validate TOC header.
-	toc := tocHeader(packet[0])
-	if toc.frameCode() != frameCodeOneFrame {
-		return nil, ErrUnsupportedFrameCode
-	}
-
-	// Decompress the payload (everything after the TOC byte).
-	// Limit decompressed output to maxDecompressedBytes+1 so that zip-bomb
-	// payloads are caught without exhausting memory.
-	r := flate.NewReader(bytes.NewReader(packet[1:]))
-	limited := io.LimitReader(r, int64(maxDecompressedBytes)+1)
-	raw, readErr := io.ReadAll(limited)
-	closeErr := r.Close()
-
-	if readErr != nil {
-		return nil, readErr
-	}
-	if closeErr != nil {
-		return nil, closeErr
-	}
-	if len(raw) > maxDecompressedBytes {
-		return nil, ErrPayloadTooLarge
-	}
-
-	if len(raw)%2 != 0 {
-		return nil, ErrInvalidFrameData
-	}
-
-	samples := make([]int16, len(raw)/2)
-	for i := range samples {
-		samples[i] = int16(binary.LittleEndian.Uint16(raw[i*2:]))
-	}
-	return samples, nil
+	// Return a copy of the output to avoid data races if caller holds the slice.
+	result := make([]byte, e.outputBuf.Len())
+	copy(result, e.outputBuf.Bytes())
+	return result, nil
 }

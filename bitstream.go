@@ -7,6 +7,26 @@
 // round-trip packets; they are not compatible with standard Opus decoders.
 package magnum
 
+// Supported sample rates for Opus encoding/decoding.
+const (
+	SampleRate8k  = 8000  // narrowband
+	SampleRate16k = 16000 // wideband
+	SampleRate24k = 24000 // superwideband
+	SampleRate48k = 48000 // fullband
+)
+
+// supportedSampleRates lists all sample rates supported by this encoder/decoder.
+var supportedSampleRates = []int{SampleRate8k, SampleRate16k, SampleRate24k, SampleRate48k}
+
+// isValidSampleRate returns true if the given sample rate is supported.
+func isValidSampleRate(sampleRate int) bool {
+	switch sampleRate {
+	case SampleRate8k, SampleRate16k, SampleRate24k, SampleRate48k:
+		return true
+	}
+	return false
+}
+
 // Configuration represents an Opus configuration number stored in bits 7–3 of
 // the Table of Contents (TOC) header (RFC 6716 §3.1).
 type Configuration byte
@@ -19,10 +39,13 @@ const (
 	// frameCodeOneFrame indicates a single-frame Opus packet.
 	frameCodeOneFrame frameCode = 0
 	// frameCodeTwoEqualFrames indicates two frames of equal compressed size.
+	// Reserved for future multi-frame support (ROADMAP Milestone 5).
 	frameCodeTwoEqualFrames frameCode = 1
 	// frameCodeTwoDifferentFrames indicates two frames with different compressed sizes.
+	// Reserved for future multi-frame support (ROADMAP Milestone 5).
 	frameCodeTwoDifferentFrames frameCode = 2
 	// frameCodeArbitraryFrames indicates an arbitrary number of frames (CBR or VBR).
+	// Reserved for future multi-frame support (ROADMAP Milestone 5).
 	frameCodeArbitraryFrames frameCode = 3
 )
 
@@ -46,14 +69,49 @@ const (
 // a 20 ms frame at the given sample rate. Values follow RFC 6716 Table 2.
 func configForSampleRate(sampleRate int) Configuration {
 	switch sampleRate {
-	case 8000:
+	case SampleRate8k:
 		return ConfigurationSILKNB20ms // narrowband
-	case 16000:
+	case SampleRate16k:
 		return ConfigurationSILKWB20ms // wideband
-	case 24000:
+	case SampleRate24k:
 		return ConfigurationCELTSWB20ms // superwideband
-	default: // 48000
+	default: // SampleRate48k
 		return ConfigurationCELTFB20ms // fullband
+	}
+}
+
+// sampleRateForConfig returns the sample rate corresponding to the given
+// Opus TOC configuration. This is the inverse of configForSampleRate.
+// Returns 0 for unknown configurations.
+func sampleRateForConfig(config Configuration) int {
+	// RFC 6716 Table 2: configurations are grouped by bandwidth.
+	// Configs 0-3: SILK NB (8 kHz)
+	// Configs 4-7: SILK MB (12 kHz) - not supported, map to 16k
+	// Configs 8-11: SILK WB (16 kHz)
+	// Configs 12-15: Hybrid SWB (24 kHz)
+	// Configs 16-19: Hybrid FB (48 kHz)
+	// Configs 20-23: CELT NB (8 kHz) - not standard, map to 8k
+	// Configs 24-27: CELT SWB (24 kHz)
+	// Configs 28-31: CELT FB (48 kHz)
+	switch {
+	case config <= 3:
+		return SampleRate8k
+	case config <= 7:
+		return SampleRate16k // mediumband maps to wideband
+	case config <= 11:
+		return SampleRate16k
+	case config <= 15:
+		return SampleRate24k // hybrid superwideband
+	case config <= 19:
+		return SampleRate48k // hybrid fullband
+	case config <= 23:
+		return SampleRate8k // CELT narrowband (rare)
+	case config <= 27:
+		return SampleRate24k
+	case config <= 31:
+		return SampleRate48k
+	default:
+		return 0
 	}
 }
 
@@ -62,11 +120,18 @@ func configForSampleRate(sampleRate int) Configuration {
 // frame-count code (bits 1–0).
 type tocHeader byte
 
+// TOC header bit layout constants per RFC 6716 §3.1.
+const (
+	tocConfigShift   = 3          // configuration is stored in bits 7–3
+	tocStereoMask    = 0b00000100 // bit 2 is the stereo flag
+	tocFrameCodeMask = 0b00000011 // bits 1–0 encode the frame count
+)
+
 // newTOCHeader assembles a TOC header byte from its constituent fields.
 func newTOCHeader(config Configuration, stereo bool, fc frameCode) tocHeader {
-	result := byte(config) << 3
+	result := byte(config) << tocConfigShift
 	if stereo {
-		result |= 0b00000100
+		result |= tocStereoMask
 	}
 	result |= byte(fc)
 	return tocHeader(result)
@@ -74,15 +139,15 @@ func newTOCHeader(config Configuration, stereo bool, fc frameCode) tocHeader {
 
 // configuration returns the configuration number from the TOC header.
 func (t tocHeader) configuration() Configuration {
-	return Configuration(t >> 3)
+	return Configuration(t >> tocConfigShift)
 }
 
 // isStereo returns whether the packet carries a stereo signal.
 func (t tocHeader) isStereo() bool {
-	return (t & 0b00000100) != 0
+	return (t & tocStereoMask) != 0
 }
 
 // frameCode returns the frame-count code from the TOC header.
 func (t tocHeader) frameCode() frameCode {
-	return frameCode(t & 0b00000011)
+	return frameCode(t & tocFrameCodeMask)
 }
