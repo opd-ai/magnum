@@ -7,6 +7,15 @@ import (
 	"io"
 )
 
+// maxDecompressedBytes is the maximum number of bytes that Decode will
+// decompress from a single packet. Packets whose decompressed payload exceeds
+// this limit are rejected with ErrPayloadTooLarge to prevent memory
+// exhaustion from malformed or malicious inputs (zip-bomb mitigation).
+//
+// 65536 bytes comfortably covers the largest possible legitimate frame:
+// 48 kHz × 60 ms × 2 channels × 2 bytes/sample = 11 520 bytes.
+const maxDecompressedBytes = 65536
+
 // Encoder is a simplified pure-Go Opus-compatible audio encoder.
 //
 // It follows the pion/opus API patterns and wraps PCM audio frames in
@@ -29,16 +38,16 @@ func NewEncoder(sampleRate, channels int) (*Encoder, error) {
 	switch sampleRate {
 	case 8000, 16000, 24000, 48000:
 	default:
-		return nil, errUnsupportedSampleRate
+		return nil, ErrUnsupportedSampleRate
 	}
 	if channels < 1 || channels > 2 {
-		return nil, errUnsupportedChannelCount
+		return nil, ErrUnsupportedChannelCount
 	}
 	return &Encoder{
 		sampleRate: sampleRate,
 		channels:   channels,
 		bitrate:    64000, // default: 64 kbps
-		buffer:     newFrameBuffer(sampleRate),
+		buffer:     newFrameBuffer(sampleRate, channels),
 	}, nil
 }
 
@@ -61,22 +70,26 @@ func (e *Encoder) SetBitrate(bitrate int) {
 	}
 }
 
-// Encode encodes a slice of signed 16-bit PCM samples into an Opus packet.
+// Encode encodes signed 16-bit interleaved PCM samples into an Opus packet.
 //
-// Samples are buffered internally until a full 20 ms frame is available.
-// Returns nil (with no error) when the buffer does not yet hold a complete
-// frame. When more than one frame's worth of samples is supplied only the
-// first complete frame is encoded; the remainder stays in the internal buffer
-// and will be returned on a subsequent call.
+// For stereo encoders, samples must be interleaved (L0, R0, L1, R1, …).
+// One 20 ms frame requires sampleRate/50 samples per channel, i.e.
+// sampleRate/50 samples for mono and sampleRate/25 samples for stereo.
+//
+// Samples are buffered internally. When a complete frame becomes available
+// (including any frames buffered from a previous call), it is encoded and
+// returned. Returns nil (with no error) when no complete frame is ready.
+// Callers may pass nil or an empty slice to drain any buffered frames without
+// supplying new data.
 func (e *Encoder) Encode(pcm []int16) ([]byte, error) {
-	if len(pcm) == 0 {
+	if len(pcm) > 0 {
+		e.buffer.write(pcm)
+	}
+	frame := e.buffer.next()
+	if frame == nil {
 		return nil, nil
 	}
-	frames := e.buffer.write(pcm)
-	if len(frames) == 0 {
-		return nil, nil
-	}
-	return e.encodeFrame(frames[0])
+	return e.encodeFrame(frame)
 }
 
 // encodeFrame encodes a single audio frame into an Opus-structured packet.
@@ -87,7 +100,8 @@ func (e *Encoder) Encode(pcm []int16) ([]byte, error) {
 //	bytes 1… : flate-compressed little-endian int16 PCM samples
 func (e *Encoder) encodeFrame(frame []int16) ([]byte, error) {
 	isStereo := e.channels == 2
-	toc := newTOCHeader(ConfigurationCELTFB20ms, isStereo, frameCodeOneFrame)
+	config := configForSampleRate(e.sampleRate)
+	toc := newTOCHeader(config, isStereo, frameCodeOneFrame)
 
 	// Serialise the frame as little-endian int16 bytes.
 	rawPCM := make([]byte, len(frame)*2)
@@ -117,25 +131,39 @@ func (e *Encoder) encodeFrame(frame []int16) ([]byte, error) {
 //
 // This is the inverse of Encode and is provided for round-trip testing.
 // It does not decode packets produced by standard Opus encoders.
+//
+// Returns [ErrTooShortForTableOfContentsHeader] if the packet is completely
+// empty, [io.ErrUnexpectedEOF] if only the TOC byte is present without a
+// payload, and [ErrPayloadTooLarge] if the decompressed payload exceeds
+// maxDecompressedBytes.
 func Decode(packet []byte) ([]int16, error) {
-	if len(packet) < 2 {
-		return nil, errTooShortForTableOfContentsHeader
+	if len(packet) < 1 {
+		return nil, ErrTooShortForTableOfContentsHeader
+	}
+	if len(packet) == 1 {
+		return nil, io.ErrUnexpectedEOF
 	}
 
 	// Decompress the payload (everything after the TOC byte).
+	// Limit decompressed output to maxDecompressedBytes+1 so that zip-bomb
+	// payloads are caught without exhausting memory.
 	r := flate.NewReader(bytes.NewReader(packet[1:]))
+	limited := io.LimitReader(r, int64(maxDecompressedBytes)+1)
+	raw, readErr := io.ReadAll(limited)
+	closeErr := r.Close()
 
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		_ = r.Close()
-		return nil, err
+	if readErr != nil {
+		return nil, readErr
 	}
-	if err = r.Close(); err != nil {
-		return nil, err
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	if len(raw) > maxDecompressedBytes {
+		return nil, ErrPayloadTooLarge
 	}
 
 	if len(raw)%2 != 0 {
-		return nil, errInvalidFrameData
+		return nil, ErrInvalidFrameData
 	}
 
 	samples := make([]int16, len(raw)/2)
@@ -144,3 +172,4 @@ func Decode(packet []byte) ([]int16, error) {
 	}
 	return samples, nil
 }
+

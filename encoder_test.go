@@ -2,6 +2,7 @@ package magnum
 
 import (
 	"errors"
+	"io"
 	"testing"
 )
 
@@ -46,18 +47,18 @@ func TestNewEncoder(t *testing.T) {
 	}
 }
 
-// TestNewEncoderErrors checks that the correct sentinel errors are returned.
+// TestNewEncoderErrors checks that the correct exported sentinel errors are returned.
 func TestNewEncoderErrors(t *testing.T) {
 	t.Parallel()
 
 	_, err := NewEncoder(44100, 1)
-	if !errors.Is(err, errUnsupportedSampleRate) {
-		t.Errorf("expected errUnsupportedSampleRate, got: %v", err)
+	if !errors.Is(err, ErrUnsupportedSampleRate) {
+		t.Errorf("expected ErrUnsupportedSampleRate, got: %v", err)
 	}
 
 	_, err = NewEncoder(48000, 3)
-	if !errors.Is(err, errUnsupportedChannelCount) {
-		t.Errorf("expected errUnsupportedChannelCount, got: %v", err)
+	if !errors.Is(err, ErrUnsupportedChannelCount) {
+		t.Errorf("expected ErrUnsupportedChannelCount, got: %v", err)
 	}
 }
 
@@ -89,7 +90,8 @@ func TestSetBitrate(t *testing.T) {
 	}
 }
 
-// TestEncodeEmptyInput verifies that Encode returns nil for an empty slice.
+// TestEncodeEmptyInput verifies that Encode returns nil for an empty slice
+// when the buffer is also empty.
 func TestEncodeEmptyInput(t *testing.T) {
 	t.Parallel()
 
@@ -117,7 +119,7 @@ func TestEncodePartialFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 960 samples are needed for 20 ms at 48 kHz; supply fewer.
+	// 960 samples are needed for 20 ms at 48 kHz mono; supply fewer.
 	pcm := make([]int16, 100)
 	result, err := enc.Encode(pcm)
 	if err != nil {
@@ -128,8 +130,8 @@ func TestEncodePartialFrame(t *testing.T) {
 	}
 }
 
-// TestEncodeFrame verifies that a complete 20 ms frame produces a non-empty
-// packet with a valid TOC header.
+// TestEncodeFrame verifies that a complete 20 ms mono frame produces a
+// non-empty packet with a valid TOC header.
 func TestEncodeFrame(t *testing.T) {
 	t.Parallel()
 
@@ -138,7 +140,7 @@ func TestEncodeFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 960 samples = 20 ms at 48 kHz.
+	// 960 samples = 20 ms at 48 kHz mono.
 	pcm := make([]int16, 960)
 	for i := range pcm {
 		pcm[i] = int16(i % 1000)
@@ -154,7 +156,7 @@ func TestEncodeFrame(t *testing.T) {
 
 	toc := tocHeader(packet[0])
 	if got := toc.configuration(); got != ConfigurationCELTFB20ms {
-		t.Errorf("TOC configuration: got %d, want %d", got, ConfigurationCELTFB20ms)
+		t.Errorf("TOC configuration: got %d, want %d (ConfigurationCELTFB20ms)", got, ConfigurationCELTFB20ms)
 	}
 	if toc.isStereo() {
 		t.Error("TOC stereo flag: expected mono (false), got true")
@@ -164,7 +166,9 @@ func TestEncodeFrame(t *testing.T) {
 	}
 }
 
-// TestEncodeFrameStereo verifies TOC stereo flag for a stereo encoder.
+// TestEncodeFrameStereo verifies that a 48 kHz stereo encoder sets the TOC
+// stereo flag and requires 1920 interleaved int16 samples per 20 ms frame
+// (960 samples/channel × 2 channels).
 func TestEncodeFrameStereo(t *testing.T) {
 	t.Parallel()
 
@@ -173,10 +177,18 @@ func TestEncodeFrameStereo(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pcm := make([]int16, 960)
+	// 1920 samples = 960 frames * 2 channels (L/R interleaved) for 20 ms at 48 kHz.
+	pcm := make([]int16, 1920)
+	for i := range pcm {
+		pcm[i] = int16(i % 1000)
+	}
+
 	packet, err := enc.Encode(pcm)
 	if err != nil {
 		t.Fatalf("Encode: unexpected error: %v", err)
+	}
+	if len(packet) == 0 {
+		t.Fatal("Encode: expected non-empty packet for stereo frame")
 	}
 	if !tocHeader(packet[0]).isStereo() {
 		t.Error("TOC stereo flag: expected true for stereo encoder, got false")
@@ -219,7 +231,74 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 	}
 }
 
-// TestDecodeShortPacket verifies that Decode rejects a too-short packet.
+// TestEncodeMultipleFrames verifies that feeding more than one frame's worth
+// of samples in a single Encode call does not silently drop the extra frame.
+// The second frame must be retrievable by a subsequent Encode call.
+func TestEncodeMultipleFrames(t *testing.T) {
+	t.Parallel()
+
+	enc, err := NewEncoder(48000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Build two distinct 960-sample frames.
+	frame1 := make([]int16, 960)
+	frame2 := make([]int16, 960)
+	for i := range frame1 {
+		frame1[i] = int16(i % 1000)
+		frame2[i] = int16((i + 500) % 1000)
+	}
+
+	// Feed both frames in a single call (1920 samples).
+	combined := append(frame1, frame2...)
+	packet1, err := enc.Encode(combined)
+	if err != nil {
+		t.Fatalf("Encode (combined): %v", err)
+	}
+	if packet1 == nil {
+		t.Fatal("Encode: expected first packet, got nil")
+	}
+
+	// Drain the second frame without supplying new samples.
+	packet2, err := enc.Encode(nil)
+	if err != nil {
+		t.Fatalf("Encode (drain): %v", err)
+	}
+	if packet2 == nil {
+		t.Fatal("Encode: expected second packet after drain, got nil (data loss)")
+	}
+
+	// Verify that the second decoded packet matches frame2 exactly.
+	decoded2, err := Decode(packet2)
+	if err != nil {
+		t.Fatalf("Decode packet2: %v", err)
+	}
+	if len(decoded2) != len(frame2) {
+		t.Fatalf("packet2 decoded length: got %d, want %d", len(decoded2), len(frame2))
+	}
+	for i, want := range frame2 {
+		if decoded2[i] != want {
+			t.Errorf("packet2 sample[%d]: got %d, want %d", i, decoded2[i], want)
+		}
+	}
+}
+
+// TestDecodeEmptyPacket verifies that Decode rejects a completely empty packet.
+func TestDecodeEmptyPacket(t *testing.T) {
+	t.Parallel()
+
+	_, err := Decode([]byte{})
+	if err == nil {
+		t.Error("Decode: expected error for empty packet, got nil")
+	}
+	if !errors.Is(err, ErrTooShortForTableOfContentsHeader) {
+		t.Errorf("Decode: expected ErrTooShortForTableOfContentsHeader, got: %v", err)
+	}
+}
+
+// TestDecodeShortPacket verifies that Decode rejects a packet that has only a
+// TOC byte but no payload, returning io.ErrUnexpectedEOF.
 func TestDecodeShortPacket(t *testing.T) {
 	t.Parallel()
 
@@ -227,35 +306,64 @@ func TestDecodeShortPacket(t *testing.T) {
 	if err == nil {
 		t.Error("Decode: expected error for 1-byte packet, got nil")
 	}
-	if !errors.Is(err, errTooShortForTableOfContentsHeader) {
-		t.Errorf("Decode: expected errTooShortForTableOfContentsHeader, got: %v", err)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("Decode: expected io.ErrUnexpectedEOF for TOC-only packet, got: %v", err)
 	}
 }
 
 // TestFrameBufferBuffering verifies that the frameBuffer accumulates samples
-// and releases complete frames correctly.
+// and releases complete frames correctly via next.
 func TestFrameBufferBuffering(t *testing.T) {
 	t.Parallel()
 
-	fb := newFrameBuffer(48000)
+	fb := newFrameBuffer(48000, 1)
 	if fb.frameSize != 960 {
-		t.Fatalf("frameSize: got %d, want 960 (20ms @ 48kHz)", fb.frameSize)
+		t.Fatalf("frameSize: got %d, want 960 (20ms @ 48kHz mono)", fb.frameSize)
 	}
 
-	// Partial write: no frames yet.
-	if frames := fb.write(make([]int16, 500)); len(frames) != 0 {
-		t.Errorf("expected 0 frames after 500 samples, got %d", len(frames))
+	// Partial write: no complete frame yet.
+	fb.write(make([]int16, 500))
+	if got := fb.next(); got != nil {
+		t.Errorf("next() after partial write: expected nil, got %d samples", len(got))
 	}
 	if fb.buffered() != 500 {
 		t.Errorf("buffered: got %d, want 500", fb.buffered())
 	}
 
-	// Complete the frame: exactly one frame returned.
-	if frames := fb.write(make([]int16, 460)); len(frames) != 1 {
-		t.Errorf("expected 1 frame after completing 960 samples, got %d", len(frames))
+	// Supply the remaining samples to complete one frame.
+	fb.write(make([]int16, 460))
+	if got := fb.next(); got == nil {
+		t.Error("next() after completing frame: expected frame, got nil")
+	}
+	// No more frames or partial samples remain.
+	if got := fb.next(); got != nil {
+		t.Errorf("next() after draining: expected nil, got %d samples", len(got))
 	}
 	if fb.buffered() != 0 {
-		t.Errorf("buffered: got %d, want 0 after consuming frame", fb.buffered())
+		t.Errorf("buffered after full consume: got %d, want 0", fb.buffered())
+	}
+}
+
+// TestFrameBufferMultipleFrames verifies that feeding more than one frame at
+// once queues all complete frames without data loss.
+func TestFrameBufferMultipleFrames(t *testing.T) {
+	t.Parallel()
+
+	fb := newFrameBuffer(48000, 1)
+
+	// Feed exactly two frames (1920 samples at 48 kHz mono).
+	fb.write(make([]int16, 1920))
+
+	frame1 := fb.next()
+	if frame1 == nil {
+		t.Fatal("next(): expected first frame, got nil")
+	}
+	frame2 := fb.next()
+	if frame2 == nil {
+		t.Fatal("next(): expected second frame, got nil (data loss)")
+	}
+	if got := fb.next(); got != nil {
+		t.Errorf("next() after two frames drained: expected nil, got frame")
 	}
 }
 
@@ -264,7 +372,7 @@ func TestFrameBufferBuffering(t *testing.T) {
 func TestFrameBufferFlush(t *testing.T) {
 	t.Parallel()
 
-	fb := newFrameBuffer(48000)
+	fb := newFrameBuffer(48000, 1)
 
 	// Empty buffer: flush returns nil.
 	if got := fb.flush(); got != nil {
@@ -280,16 +388,16 @@ func TestFrameBufferFlush(t *testing.T) {
 	if len(frame) != fb.frameSize {
 		t.Errorf("flush frame length: got %d, want %d", len(frame), fb.frameSize)
 	}
-	// The first 100 samples are zero (since the input was zero-valued).
-	// The rest must also be zero-padded.
+	// Samples 0–99 are zero (input was zero-valued); 100–959 must be zero-padded.
 	for i, s := range frame[100:] {
 		if s != 0 {
 			t.Errorf("flush padding at index %d: got %d, want 0", 100+i, s)
 		}
 	}
 
-	// After flush the buffer should be empty.
+	// After flush the partial buffer should be empty.
 	if fb.buffered() != 0 {
 		t.Errorf("buffered after flush: got %d, want 0", fb.buffered())
 	}
 }
+

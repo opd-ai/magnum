@@ -19,6 +19,8 @@ go get github.com/opd-ai/magnum
 
 ## Usage
 
+### Mono (1 channel)
+
 ```go
 import "github.com/opd-ai/magnum"
 
@@ -31,8 +33,10 @@ if err != nil {
 // (Optional) set a target bitrate.
 enc.SetBitrate(64000)
 
-// Feed 20 ms of PCM samples (960 samples at 48 kHz).
+// Feed 20 ms of PCM samples.
+// For mono 48 kHz: 960 samples = sampleRate / 50.
 // Encode returns nil until a full frame has been buffered.
+// Pass nil to drain any buffered frames without supplying new samples.
 pcm := make([]int16, 960)
 // … fill pcm with audio data …
 
@@ -49,14 +53,56 @@ if err != nil {
 _ = decoded
 ```
 
+### Stereo (2 channels)
+
+For stereo, PCM samples are **interleaved** (L₀, R₀, L₁, R₁, …). A 20 ms
+stereo frame at 48 kHz therefore requires **1920** int16 samples
+(960 samples/channel × 2 channels):
+
+```go
+enc, err := magnum.NewEncoder(48000, 2)
+if err != nil {
+    log.Fatal(err)
+}
+
+// 1920 interleaved int16 samples = 20 ms at 48 kHz stereo.
+pcm := make([]int16, 1920)
+// … fill pcm with interleaved L/R samples …
+
+packet, err := enc.Encode(pcm)
+```
+
+Frame sizes for other sample rates:
+
+| Sample rate | Channels | Samples per 20 ms frame |
+|-------------|----------|-------------------------|
+| 8 000 Hz    | 1 (mono) | 160                     |
+| 8 000 Hz    | 2 (stereo)| 320                    |
+| 16 000 Hz   | 1 (mono) | 320                     |
+| 16 000 Hz   | 2 (stereo)| 640                    |
+| 24 000 Hz   | 1 (mono) | 480                     |
+| 24 000 Hz   | 2 (stereo)| 960                    |
+| 48 000 Hz   | 1 (mono) | 960                     |
+| 48 000 Hz   | 2 (stereo)| 1920                   |
+
 ## API
 
 | Symbol | Description |
 |---|---|
 | `NewEncoder(sampleRate, channels int) (*Encoder, error)` | Create an encoder. Supported rates: 8000, 16000, 24000, 48000 Hz. Channels: 1 or 2. |
-| `(*Encoder).Encode(pcm []int16) ([]byte, error)` | Encode one 20 ms frame. Returns `nil` until the buffer holds a full frame. |
+| `(*Encoder).Encode(pcm []int16) ([]byte, error)` | Encode one 20 ms frame. Buffers input; returns `nil` until a complete frame is ready. Pass `nil` to drain buffered frames. |
 | `(*Encoder).SetBitrate(bitrate int)` | Set target bitrate (bps, clamped to 6000–510000). |
 | `Decode(packet []byte) ([]int16, error)` | Decode a packet produced by `Encode`. |
+
+Exported sentinel errors for `errors.Is` branching:
+
+| Error | Returned by |
+|---|---|
+| `ErrUnsupportedSampleRate` | `NewEncoder` with an unsupported sample rate |
+| `ErrUnsupportedChannelCount` | `NewEncoder` with channels ≠ 1 or 2 |
+| `ErrTooShortForTableOfContentsHeader` | `Decode` with an empty packet |
+| `ErrInvalidFrameData` | `Decode` with an odd-length decompressed payload |
+| `ErrPayloadTooLarge` | `Decode` when decompressed data exceeds 64 KiB |
 
 ## Packet format
 
@@ -65,8 +111,10 @@ byte 0      : Opus TOC header (config | stereo flag | frame code)
 bytes 1…    : flate-compressed little-endian int16 PCM samples
 ```
 
-The TOC header follows RFC 6716 §3.1. This encoder always uses
-`ConfigurationCELTFB20ms` (configuration 29) and `frameCodeOneFrame`.
+The TOC header follows RFC 6716 §3.1. The configuration field reflects the
+actual bandwidth of the configured sample rate (e.g., CELT fullband for 48 kHz,
+SILK wideband for 16 kHz). This encoder always produces single-frame packets
+(`frameCodeOneFrame`).
 
 ## Limitations
 

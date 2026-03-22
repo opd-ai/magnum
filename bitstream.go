@@ -26,17 +26,40 @@ const (
 	frameCodeArbitraryFrames frameCode = 3
 )
 
-// Standard Opus configurations (RFC 6716 Table 2).
+// Standard Opus configurations (RFC 6716 Table 2, 20 ms frame durations).
 const (
 	// ConfigurationSILKNB20ms is SILK-only, narrowband (8 kHz), 20 ms frame.
-	ConfigurationSILKNB20ms Configuration = 3
+	// This is configuration 1 in RFC 6716 Table 2 (group 0–3, index 1).
+	ConfigurationSILKNB20ms Configuration = 1
 	// ConfigurationSILKWB20ms is SILK-only, wideband (16 kHz), 20 ms frame.
-	ConfigurationSILKWB20ms Configuration = 11
+	// This is configuration 9 in RFC 6716 Table 2 (group 8–11, index 1).
+	ConfigurationSILKWB20ms Configuration = 9
+	// ConfigurationCELTSWB20ms is CELT-only, superwideband (24 kHz), 20 ms frame.
+	// This is configuration 27 in RFC 6716 Table 2 (group 24–27, index 3).
+	ConfigurationCELTSWB20ms Configuration = 27
 	// ConfigurationCELTFB20ms is CELT-only, fullband (48 kHz), 20 ms frame.
-	ConfigurationCELTFB20ms Configuration = 29
+	// This is configuration 31 in RFC 6716 Table 2 (group 28–31, index 3).
+	ConfigurationCELTFB20ms Configuration = 31
 )
 
+// configForSampleRate returns the Opus TOC configuration that best describes
+// a 20 ms frame at the given sample rate. Values follow RFC 6716 Table 2.
+func configForSampleRate(sampleRate int) Configuration {
+	switch sampleRate {
+	case 8000:
+		return ConfigurationSILKNB20ms // narrowband
+	case 16000:
+		return ConfigurationSILKWB20ms // wideband
+	case 24000:
+		return ConfigurationCELTSWB20ms // superwideband
+	default: // 48000
+		return ConfigurationCELTFB20ms // fullband
+	}
+}
+
 // tocHeader is the Table of Contents header byte defined in RFC 6716 §3.1.
+// It encodes the configuration number (bits 7–3), stereo flag (bit 2), and
+// frame-count code (bits 1–0).
 type tocHeader byte
 
 // newTOCHeader assembles a TOC header byte from its constituent fields.
