@@ -47,9 +47,9 @@
 
 ### HIGH
 
-- [ ] **SetBitrate is stored but never used** — `encoder.go:29,58-71` — The bitrate field is set and clamped correctly, but `encodeFrame()` at `encoder.go:101-128` does not reference `e.bitrate` when compressing. This matches the documented limitation ("bitrate hint only"), but users setting bitrate may expect it to affect output size. — **Remediation:** Add a NOTE comment at `encoder.go:57` stating `// NOTE: bitrate is stored for future codec integration; current flate compression does not use it.` Validate: `grep -n "NOTE:" encoder.go`.
+- [x] **SetBitrate is stored but never used** — `encoder.go:29,58-71` — The bitrate field is set and clamped correctly, but `encodeFrame()` at `encoder.go:101-128` does not reference `e.bitrate` when compressing. This matches the documented limitation ("bitrate hint only"), but users setting bitrate may expect it to affect output size. — **Remediation:** Add a NOTE comment at `encoder.go:57` stating `// NOTE: bitrate is stored for future codec integration; current flate compression does not use it.` Validate: `grep -n "NOTE:" encoder.go`.
 
-- [ ] **Bare error returns obscure failure context** — `encoder.go:117,120,123` — Errors from `flate.NewWriter`, `w.Write`, and `w.Close` are returned without wrapping, making debugging difficult if compression fails. — **Remediation:** Wrap errors: `return nil, fmt.Errorf("magnum: flate compress: %w", err)`. Add `"fmt"` to imports. Validate: `go build ./...`.
+- [x] **Bare error returns obscure failure context** — `encoder.go:117,120,123` — Errors from `flate.NewWriter`, `w.Write`, and `w.Close` are returned without wrapping, making debugging difficult if compression fails. — **Remediation:** Wrap errors: `return nil, fmt.Errorf("magnum: flate compress: %w", err)`. Add `"fmt"` to imports. Validate: `go build ./...`.
 
 ### MEDIUM
 

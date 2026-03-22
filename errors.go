@@ -23,4 +23,9 @@ var (
 	// exceeds the maximum allowed size, preventing memory exhaustion from
 	// malformed or malicious packets.
 	ErrPayloadTooLarge = errors.New("decompressed payload exceeds maximum allowed size")
+
+	// ErrUnsupportedFrameCode is returned by Decode when the packet contains a
+	// frame code other than frameCodeOneFrame (0). This encoder only produces
+	// single-frame packets; multi-frame packets (codes 1, 2, 3) are not supported.
+	ErrUnsupportedFrameCode = errors.New("unsupported frame code: only single-frame packets (code 0) are supported")
 )

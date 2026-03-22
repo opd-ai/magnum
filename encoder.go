@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/flate"
 	"encoding/binary"
+	"fmt"
 	"io"
 )
 
@@ -55,6 +56,9 @@ func NewEncoder(sampleRate, channels int) (*Encoder, error) {
 // Values below 6000 are clamped to 6000; values above 510000 are clamped to
 // 510000. The bitrate is stored for future use when a full codec backend is
 // integrated; the current simplified implementation does not use it.
+//
+// NOTE: bitrate is stored for future codec integration (ROADMAP Milestones 2-3);
+// the current flate-based compression does not use it to control output size.
 func (e *Encoder) SetBitrate(bitrate int) {
 	const (
 		minBitrate = 6000
@@ -115,13 +119,13 @@ func (e *Encoder) encodeFrame(frame []int16) ([]byte, error) {
 
 	w, err := flate.NewWriter(&buf, flate.DefaultCompression)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("magnum: encode frame: %w", err)
 	}
 	if _, err = w.Write(rawPCM); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("magnum: encode frame: %w", err)
 	}
 	if err = w.Close(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("magnum: encode frame: %w", err)
 	}
 
 	return buf.Bytes(), nil
@@ -134,7 +138,8 @@ func (e *Encoder) encodeFrame(frame []int16) ([]byte, error) {
 //
 // Returns [ErrTooShortForTableOfContentsHeader] if the packet is completely
 // empty, [io.ErrUnexpectedEOF] if only the TOC byte is present without a
-// payload, and [ErrPayloadTooLarge] if the decompressed payload exceeds
+// payload, [ErrUnsupportedFrameCode] if the packet uses multi-frame encoding,
+// and [ErrPayloadTooLarge] if the decompressed payload exceeds
 // maxDecompressedBytes.
 func Decode(packet []byte) ([]int16, error) {
 	if len(packet) < 1 {
@@ -142,6 +147,12 @@ func Decode(packet []byte) ([]int16, error) {
 	}
 	if len(packet) == 1 {
 		return nil, io.ErrUnexpectedEOF
+	}
+
+	// Parse and validate TOC header.
+	toc := tocHeader(packet[0])
+	if toc.frameCode() != frameCodeOneFrame {
+		return nil, ErrUnsupportedFrameCode
 	}
 
 	// Decompress the payload (everything after the TOC byte).
