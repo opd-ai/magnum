@@ -126,8 +126,10 @@ SILK wideband for 16 kHz). This encoder always produces single-frame packets
 
 ## Roadmap
 
-Future work could replace the flate payload with a real SILK or CELT encoder to
-produce RFC 6716–compliant packets decodable by pion/opus and libopus.
+See [ROADMAP.md](ROADMAP.md) for the full milestone plan covering the path
+from this baseline to RFC 6716–compliant packets interoperable with libopus
+and pion/opus (CELT, SILK, hybrid mode, variable frame durations, conformance
+test vectors, and a standard `Decoder` type).
 
 ## License
 
