@@ -1,5 +1,12 @@
 package magnum
 
+import "errors"
+
+// ErrFrameQueueFull is returned when the frame buffer's ready queue is full
+// and cannot accept more frames. This indicates backpressure — the consumer
+// is not calling next() fast enough to keep up with incoming samples.
+var ErrFrameQueueFull = errors.New("frame buffer queue is full")
+
 // frameDurationMs is the standard Opus frame duration used by this encoder, in
 // milliseconds.
 const frameDurationMs = 20
@@ -18,6 +25,9 @@ type frameBuffer struct {
 	ready [][]int16
 	// frameSize is the total number of int16 samples per frame (all channels).
 	frameSize int
+	// maxQueueDepth is the maximum number of frames allowed in the ready queue.
+	// A value of 0 means unbounded (for backward compatibility).
+	maxQueueDepth int
 }
 
 // newFrameBuffer creates a new frameBuffer sized for one 20 ms frame at the
@@ -26,9 +36,10 @@ type frameBuffer struct {
 func newFrameBuffer(sampleRate, channels int) *frameBuffer {
 	frameSize := sampleRate * frameDurationMs / 1000 * channels
 	return &frameBuffer{
-		samples:   make([]int16, 0, frameSize),
-		ready:     make([][]int16, 0, 4), // pre-allocate for typical streaming use
-		frameSize: frameSize,
+		samples:       make([]int16, 0, frameSize),
+		ready:         make([][]int16, 0, 4), // pre-allocate for typical streaming use
+		frameSize:     frameSize,
+		maxQueueDepth: 0, // unbounded for backward compatibility
 	}
 }
 
@@ -36,14 +47,27 @@ func newFrameBuffer(sampleRate, channels int) *frameBuffer {
 // frame-sized chunks so that the partial-frame backing array never exceeds
 // frameSize samples. Completed frames are placed in the ready queue and
 // retrieved via next.
-func (fb *frameBuffer) write(samples []int16) {
+//
+// Returns ErrFrameQueueFull if maxQueueDepth > 0 and the ready queue would
+// exceed that limit. When an error is returned, no samples have been written.
+func (fb *frameBuffer) write(samples []int16) error {
+	// If queue depth is limited, check if we'd exceed it.
+	if fb.maxQueueDepth > 0 {
+		// Estimate how many new frames this write would produce.
+		totalSamples := len(fb.samples) + len(samples)
+		newFrames := totalSamples / fb.frameSize
+		if len(fb.ready)+newFrames > fb.maxQueueDepth {
+			return ErrFrameQueueFull
+		}
+	}
+
 	for len(samples) > 0 {
 		// How many samples are needed to complete the current partial frame.
 		space := fb.frameSize - len(fb.samples)
 		if space > len(samples) {
 			// Not enough to complete a frame; buffer the remainder.
 			fb.samples = append(fb.samples, samples...)
-			return
+			return nil
 		}
 
 		// Fill exactly one frame.
@@ -58,6 +82,7 @@ func (fb *frameBuffer) write(samples []int16) {
 		// Reset the partial buffer without reallocating.
 		fb.samples = fb.samples[:0]
 	}
+	return nil
 }
 
 // next removes and returns the oldest complete frame from the ready queue.

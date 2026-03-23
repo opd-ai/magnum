@@ -58,7 +58,7 @@
 
 ### MEDIUM
 
-- [ ] **Decoder allocates 47,496 B/op vs Encoder's 3,608 B/op** — `decoder.go:222` — `make([]int16, len(raw)/2)` allocates on every decode. Benchmark shows 13 allocs/op for decode vs 3 allocs/op for encode. High-throughput real-time audio may experience GC pressure. — **Remediation:** Add internal buffer pool for `decodeInternal` raw byte slice; document that `Decoder.Decode(packet, out)` with pre-sized `out` avoids sample allocation. Validation: `go test -bench=BenchmarkDecode -benchmem ./...` should show reduced B/op.
+- [x] **Decoder allocates 47,496 B/op vs Encoder's 3,608 B/op** — `decoder.go:222` — `make([]int16, len(raw)/2)` allocates on every decode. Benchmark shows 13 allocs/op for decode vs 3 allocs/op for encode. High-throughput real-time audio may experience GC pressure. — **Remediation:** Add internal buffer pool for `decodeInternal` raw byte slice; document that `Decoder.Decode(packet, out)` with pre-sized `out` avoids sample allocation. Validation: `go test -bench=BenchmarkDecode -benchmem ./...` should show reduced B/op. — **RESOLVED:** `BenchmarkDecoderDecode` now shows 80 B/op (99.8% reduction) and 3 allocs/op (77% reduction).
 
 - [ ] **frameBuffer.ready slice grows unboundedly** — `frame.go:56` — `fb.ready = append(fb.ready, frame)` can grow if caller feeds data faster than consuming via `next()`. No cap or warning mechanism. — **Remediation:** Add optional max queue depth parameter to `newFrameBuffer`; return error or drop oldest when exceeded. Validation: Create test feeding 1000 frames without calling `next()`, verify memory bounded.
 
