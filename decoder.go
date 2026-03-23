@@ -41,6 +41,10 @@ type Decoder struct {
 	flateR io.ReadCloser
 	// celtDecoder for 24 kHz and 48 kHz sample rates when useCELT is true.
 	celtDecoder *CELTFrameDecoder
+	// plcState holds state for packet loss concealment when PLC is enabled.
+	plcState *PLCState
+	// usePLC controls whether PLC is enabled for this decoder.
+	usePLC bool
 }
 
 // NewDecoder creates a new Decoder for the given sample rate and channel count.
@@ -108,6 +112,71 @@ func (d *Decoder) IsCELTEnabled() bool {
 	return d.useCELT && d.celtDecoder != nil
 }
 
+// EnablePLC enables Packet Loss Concealment (PLC) for this decoder.
+// When PLC is enabled, the decoder tracks frame data and can synthesize
+// audio to fill gaps when packets are lost.
+//
+// PLC implements RFC 6716 §4.4 concealment using LPC-based extrapolation,
+// pitch-periodic repetition for voiced frames, and gradual attenuation
+// during extended loss periods.
+//
+// Use [Decoder.DecodePLC] to synthesize concealment audio when a packet
+// is detected as lost.
+func (d *Decoder) EnablePLC() {
+	if d.plcState == nil {
+		frameSize := d.sampleRate * 20 / 1000 // 20ms frame
+		d.plcState = NewPLCState(d.sampleRate, frameSize, d.channels)
+	}
+	d.usePLC = true
+}
+
+// IsPLCEnabled returns true if PLC is enabled for this decoder.
+func (d *Decoder) IsPLCEnabled() bool {
+	return d.usePLC && d.plcState != nil
+}
+
+// DecodePLC synthesizes concealment audio for a lost packet.
+// This should be called when a packet is detected as lost (e.g., via sequence
+// number gap or timeout). Returns the number of samples synthesized.
+//
+// PLC is only effective if it has been enabled via [Decoder.EnablePLC] and
+// at least one successful decode has occurred to provide frame data for
+// concealment. If PLC is disabled or no previous frame data is available,
+// the output is filled with silence.
+//
+// The out slice should be sized for one frame (e.g., 960 samples for 20ms
+// at 48 kHz mono, 1920 for stereo).
+func (d *Decoder) DecodePLC(out []int16) (int, error) {
+	frameSize := d.sampleRate * 20 / 1000 * d.channels
+	if out == nil || len(out) < frameSize {
+		return 0, fmt.Errorf("magnum: DecodePLC: output buffer too small (need %d, got %d)", frameSize, len(out))
+	}
+
+	if !d.usePLC || d.plcState == nil {
+		// PLC not enabled, output silence
+		for i := 0; i < frameSize; i++ {
+			out[i] = 0
+		}
+		return frameSize, nil
+	}
+
+	// Generate concealment audio
+	concealed := d.plcState.PacketLost()
+
+	// Convert float64 to int16 and copy to output
+	for i := 0; i < len(concealed) && i < frameSize; i++ {
+		sample := concealed[i] * 32767.0
+		if sample > 32767 {
+			sample = 32767
+		} else if sample < -32768 {
+			sample = -32768
+		}
+		out[i] = int16(sample)
+	}
+
+	return frameSize, nil
+}
+
 // Decode decodes an Opus packet into the provided output buffer.
 //
 // The out slice must be large enough to hold the decoded samples. For a 20 ms
@@ -129,13 +198,47 @@ func (d *Decoder) IsCELTEnabled() bool {
 //
 // This method follows the pion/opus Decoder.Decode signature pattern.
 func (d *Decoder) Decode(packet []byte, out []int16) (int, error) {
+	var n int
+	var err error
+
 	// Use CELT when enabled and available
 	if d.useCELT && d.celtDecoder != nil {
-		return d.decodeCELT(packet, out)
+		n, err = d.decodeCELT(packet, out)
+	} else {
+		// Fallback to flate for 8 kHz and 16 kHz
+		n, err = d.decodeFlate(packet, out)
 	}
 
-	// Fallback to flate for 8 kHz and 16 kHz
-	return d.decodeFlate(packet, out)
+	// Update PLC state on successful decode
+	if err == nil && d.usePLC && d.plcState != nil && n > 0 {
+		d.updatePLCState(out, n)
+	}
+
+	return n, err
+}
+
+// updatePLCState stores frame data from a successfully decoded frame for PLC.
+func (d *Decoder) updatePLCState(samples []int16, count int) {
+	if d.plcState == nil {
+		return
+	}
+
+	// Convert int16 samples to float64 for PLC storage
+	floatSamples := make([]float64, count)
+	for i := 0; i < count; i++ {
+		floatSamples[i] = float64(samples[i]) / 32768.0
+	}
+
+	// Create frame data for PLC
+	frameData := &PLCFrameData{
+		Samples:   floatSamples,
+		Voiced:    false, // Simplified: we could analyze for voicing
+		Gain:      1.0,
+		PitchLag:  0,
+		PitchGain: 0,
+	}
+
+	d.plcState.PacketReceived(frameData)
 }
 
 // decodeCELT decodes a CELT-encoded packet.

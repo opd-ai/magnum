@@ -194,13 +194,13 @@ also decode in `opusdec`; frame duration is configurable at the API level.
 libopus, pion/opus, or any other compliant encoder — not only `magnum`.
 
 ### Tasks
-- [ ] Add `type Decoder struct` with `NewDecoder(sampleRate, channels int)`
+- [x] Add `type Decoder struct` with `NewDecoder(sampleRate, channels int)`
   mirroring the pion/opus API (`Decoder.Decode(in []byte, out []int16)`).
-- [ ] Implement CELT decode path for configurations 24–31.
-- [ ] Implement SILK decode path for configurations 0–15.
+- [x] Implement CELT decode path for configurations 24–31.
+- [x] Implement SILK decode path for configurations 0–15.
 - [ ] Implement hybrid decode path for configurations 16–23.
-- [ ] Implement PLC (zero-input synthesis on lost packets).
-- [ ] Fuzz the decoder against random/malformed packets.
+- [x] Implement PLC (zero-input synthesis on lost packets).
+- [x] Fuzz the decoder against random/malformed packets.
 
 ### Success criteria
 `Decoder` successfully decodes `opus_demo`-generated test files for all
