@@ -80,7 +80,7 @@ audio. It is transform-based (MDCT → band energy → PVQ spectral coding).
 - [x] Implement Pyramid Vector Quantization (`alg_quant`) for spectral
   coefficient vectors.
 - [x] Implement the matching `alg_unquant` decoder.
-- [ ] Implement the `spreading` and `tf_change` parameters.
+- [x] Implement the `spreading` and `tf_change` parameters.
 
 #### 2d — CELT frame assembly
 - [ ] Wire range coder, energy coding, and PVQ output into a single
