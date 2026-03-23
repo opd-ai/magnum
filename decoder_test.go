@@ -471,3 +471,162 @@ func FuzzDecodeStandalone(f *testing.F) {
 		_, _, _ = DecodeWithInfo(data)
 	})
 }
+
+// TestDecoderEnableHybrid verifies that EnableHybrid works correctly.
+func TestDecoderEnableHybrid(t *testing.T) {
+	t.Parallel()
+
+	// EnableHybrid should succeed for 24 kHz
+	dec, err := NewDecoder(24000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = dec.EnableHybrid()
+	if err != nil {
+		t.Errorf("EnableHybrid for 24kHz: unexpected error: %v", err)
+	}
+
+	if !dec.IsHybridEnabled() {
+		t.Error("IsHybridEnabled should return true after EnableHybrid")
+	}
+
+	// EnableHybrid should fail for non-24 kHz sample rates
+	dec48, err := NewDecoder(48000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = dec48.EnableHybrid()
+	if err == nil {
+		t.Error("EnableHybrid for 48kHz: expected error, got nil")
+	}
+
+	dec16, err := NewDecoder(16000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = dec16.EnableHybrid()
+	if err == nil {
+		t.Error("EnableHybrid for 16kHz: expected error, got nil")
+	}
+}
+
+// TestDecoderHybridRoundTrip verifies that hybrid encode/decode round-trips work.
+func TestDecoderHybridRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	// Create hybrid encoder
+	encConfig := HybridEncoderConfig{
+		SampleRate: 24000,
+		Channels:   1,
+		Bitrate:    64000,
+	}
+	hybridEnc, err := NewHybridEncoder(encConfig)
+	if err != nil {
+		t.Fatalf("NewHybridEncoder: %v", err)
+	}
+
+	// Create decoder with hybrid enabled
+	dec, err := NewDecoder(24000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dec.EnableHybrid(); err != nil {
+		t.Fatalf("EnableHybrid: %v", err)
+	}
+
+	// Generate test audio
+	frameSize := 24000 * 20 / 1000 // 480 samples
+	samples := make([]float64, frameSize)
+	for i := range samples {
+		// 1 kHz sine wave
+		samples[i] = 0.5 * float64(i%24) / 24.0
+	}
+
+	// Encode with hybrid encoder
+	encoded, err := hybridEnc.EncodeFrame(samples)
+	if err != nil {
+		t.Fatalf("EncodeFrame: %v", err)
+	}
+
+	// Create Opus packet with hybrid TOC header
+	// Configuration 13 = hybrid SWB 20ms, mono
+	toc := byte(13<<3) | 0 // config=13, stereo=0, frameCode=0
+	packet := append([]byte{toc}, encoded.Data...)
+
+	// Decode with hybrid decoder
+	out := make([]int16, frameSize)
+	n, err := dec.Decode(packet, out)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+
+	if n != frameSize {
+		t.Errorf("Decode returned %d samples, want %d", n, frameSize)
+	}
+
+	// Verify samples are non-zero (basic sanity check)
+	nonZero := 0
+	for _, s := range out[:n] {
+		if s != 0 {
+			nonZero++
+		}
+	}
+	if nonZero == 0 {
+		t.Error("all decoded samples are zero")
+	}
+}
+
+// TestDecoderHybridDecodeAlloc verifies that DecodeAlloc works with hybrid packets.
+func TestDecoderHybridDecodeAlloc(t *testing.T) {
+	t.Parallel()
+
+	// Create hybrid encoder
+	encConfig := HybridEncoderConfig{
+		SampleRate: 24000,
+		Channels:   1,
+		Bitrate:    64000,
+	}
+	hybridEnc, err := NewHybridEncoder(encConfig)
+	if err != nil {
+		t.Fatalf("NewHybridEncoder: %v", err)
+	}
+
+	// Create decoder with hybrid enabled
+	dec, err := NewDecoder(24000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dec.EnableHybrid(); err != nil {
+		t.Fatalf("EnableHybrid: %v", err)
+	}
+
+	// Generate test audio
+	frameSize := 24000 * 20 / 1000 // 480 samples
+	samples := make([]float64, frameSize)
+	for i := range samples {
+		samples[i] = 0.3 * float64(i%48) / 48.0
+	}
+
+	// Encode with hybrid encoder
+	encoded, err := hybridEnc.EncodeFrame(samples)
+	if err != nil {
+		t.Fatalf("EncodeFrame: %v", err)
+	}
+
+	// Create Opus packet with hybrid TOC header
+	toc := byte(13<<3) | 0 // config=13 (hybrid SWB 20ms), mono
+	packet := append([]byte{toc}, encoded.Data...)
+
+	// Decode with DecodeAlloc
+	out, err := dec.DecodeAlloc(packet)
+	if err != nil {
+		t.Fatalf("DecodeAlloc: %v", err)
+	}
+
+	if len(out) != frameSize {
+		t.Errorf("DecodeAlloc returned %d samples, want %d", len(out), frameSize)
+	}
+}

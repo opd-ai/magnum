@@ -41,6 +41,10 @@ type Decoder struct {
 	flateR io.ReadCloser
 	// celtDecoder for 24 kHz and 48 kHz sample rates when useCELT is true.
 	celtDecoder *CELTFrameDecoder
+	// hybridDecoder for 24 kHz hybrid mode (configurations 12-19).
+	hybridDecoder *HybridDecoder
+	// useHybrid controls whether to use the hybrid codec for decoding.
+	useHybrid bool
 	// plcState holds state for packet loss concealment when PLC is enabled.
 	plcState *PLCState
 	// usePLC controls whether PLC is enabled for this decoder.
@@ -110,6 +114,41 @@ func (d *Decoder) EnableCELT() error {
 // IsCELTEnabled returns true if CELT decoding is enabled for this decoder.
 func (d *Decoder) IsCELTEnabled() bool {
 	return d.useCELT && d.celtDecoder != nil
+}
+
+// EnableHybrid enables RFC 6716–style hybrid decoding for 24 kHz sample rate.
+// Returns an error if the decoder's sample rate is not 24000 Hz.
+//
+// When hybrid is enabled, packets with TOC configurations 12-19 (hybrid SWB
+// and hybrid FB modes) are decoded using the hybrid SILK+CELT codec as
+// specified in RFC 6716 §3.1. This enables decoding of hybrid mode packets
+// produced by standard Opus encoders.
+//
+// This method is part of ROADMAP Milestone 6 (hybrid decode path).
+func (d *Decoder) EnableHybrid() error {
+	if d.sampleRate != SampleRate24k {
+		return fmt.Errorf("magnum: hybrid mode requires 24000 Hz sample rate, got %d", d.sampleRate)
+	}
+
+	if d.hybridDecoder == nil {
+		hybridConfig := HybridDecoderConfig{
+			SampleRate: d.sampleRate,
+			Channels:   d.channels,
+		}
+		hybridDec, err := NewHybridDecoder(hybridConfig)
+		if err != nil {
+			return fmt.Errorf("magnum: enable hybrid: %w", err)
+		}
+		d.hybridDecoder = hybridDec
+	}
+
+	d.useHybrid = true
+	return nil
+}
+
+// IsHybridEnabled returns true if hybrid decoding is enabled for this decoder.
+func (d *Decoder) IsHybridEnabled() bool {
+	return d.useHybrid && d.hybridDecoder != nil
 }
 
 // EnablePLC enables Packet Loss Concealment (PLC) for this decoder.
@@ -200,6 +239,21 @@ func (d *Decoder) DecodePLC(out []int16) (int, error) {
 func (d *Decoder) Decode(packet []byte, out []int16) (int, error) {
 	var n int
 	var err error
+
+	// Parse TOC to determine codec path
+	if len(packet) >= 1 {
+		toc := tocHeader(packet[0])
+		config := toc.configuration()
+
+		// Check for hybrid configurations (12-19)
+		if isHybridConfig(config) && d.useHybrid && d.hybridDecoder != nil {
+			n, err = d.decodeHybrid(packet, out)
+			if err == nil && d.usePLC && d.plcState != nil && n > 0 {
+				d.updatePLCState(out, n)
+			}
+			return n, err
+		}
+	}
 
 	// Use CELT when enabled and available
 	if d.useCELT && d.celtDecoder != nil {
@@ -311,6 +365,81 @@ func (d *Decoder) decodeCELT(packet []byte, out []int16) (int, error) {
 	return numSamples, nil
 }
 
+// decodeHybrid decodes a hybrid SILK+CELT encoded packet.
+// This handles TOC configurations 12-19 (hybrid SWB and FB modes).
+func (d *Decoder) decodeHybrid(packet []byte, out []int16) (int, error) {
+	if len(packet) < 2 {
+		return 0, ErrTooShortForTableOfContentsHeader
+	}
+
+	// Parse TOC header
+	toc := tocHeader(packet[0])
+	if toc.frameCode() != frameCodeOneFrame {
+		return 0, ErrUnsupportedFrameCode
+	}
+
+	// Validate channel configuration
+	stereo := toc.isStereo()
+	packetChannels := 1
+	if stereo {
+		packetChannels = 2
+	}
+	if packetChannels != d.channels {
+		return 0, fmt.Errorf("magnum: decode: %w", ErrChannelMismatch)
+	}
+
+	// Validate sample rate configuration
+	config := toc.configuration()
+	packetSampleRate := sampleRateForConfig(config)
+	if packetSampleRate != d.sampleRate {
+		return 0, fmt.Errorf("magnum: decode: %w", ErrSampleRateMismatch)
+	}
+
+	// Decode hybrid payload
+	hybridPayload := packet[1:]
+	floatSamples, err := d.hybridDecoder.DecodeFrame(hybridPayload)
+	if err != nil {
+		return 0, fmt.Errorf("magnum: decode: hybrid: %w", err)
+	}
+
+	// Convert float64 samples to int16
+	numSamples := len(floatSamples)
+	if d.channels == 2 {
+		numSamples *= 2
+	}
+
+	if d.channels == 1 {
+		if out != nil && len(out) >= numSamples {
+			for i, s := range floatSamples {
+				// Clamp and convert
+				sample := s * 32767.0
+				if sample > 32767 {
+					sample = 32767
+				} else if sample < -32768 {
+					sample = -32768
+				}
+				out[i] = int16(sample)
+			}
+		}
+	} else {
+		// Stereo: duplicate mono to both channels (simplification)
+		if out != nil && len(out) >= numSamples {
+			for i, s := range floatSamples {
+				sample := s * 32767.0
+				if sample > 32767 {
+					sample = 32767
+				} else if sample < -32768 {
+					sample = -32768
+				}
+				out[i*2] = int16(sample)
+				out[i*2+1] = int16(sample)
+			}
+		}
+	}
+
+	return numSamples, nil
+}
+
 // decodeFlate decodes a flate-compressed packet (fallback for SILK paths).
 func (d *Decoder) decodeFlate(packet []byte, out []int16) (int, error) {
 	// Reuse the decoder's internal buffers and flate reader for decompression.
@@ -366,6 +495,17 @@ func (d *Decoder) decodeFlate(packet []byte, out []int16) (int, error) {
 // Like [Decoder.Decode], this method validates the packet's channel and sample
 // rate configuration against the decoder's settings.
 func (d *Decoder) DecodeAlloc(packet []byte) ([]int16, error) {
+	// Parse TOC to determine codec path
+	if len(packet) >= 1 {
+		toc := tocHeader(packet[0])
+		config := toc.configuration()
+
+		// Check for hybrid configurations (12-19)
+		if isHybridConfig(config) && d.useHybrid && d.hybridDecoder != nil {
+			return d.decodeAllocHybrid(packet)
+		}
+	}
+
 	// Use CELT when enabled and available
 	if d.useCELT && d.celtDecoder != nil {
 		return d.decodeAllocCELT(packet)
@@ -409,6 +549,73 @@ func (d *Decoder) decodeAllocCELT(packet []byte) ([]int16, error) {
 	floatSamples, err := d.celtDecoder.DecodeFrame(celtPayload)
 	if err != nil {
 		return nil, fmt.Errorf("magnum: decode: CELT: %w", err)
+	}
+
+	// Convert float64 samples to int16
+	var samples []int16
+	if d.channels == 1 {
+		samples = make([]int16, len(floatSamples))
+		for i, s := range floatSamples {
+			sample := s * 32767.0
+			if sample > 32767 {
+				sample = 32767
+			} else if sample < -32768 {
+				sample = -32768
+			}
+			samples[i] = int16(sample)
+		}
+	} else {
+		// Stereo: duplicate mono to both channels (simplification)
+		samples = make([]int16, len(floatSamples)*2)
+		for i, s := range floatSamples {
+			sample := s * 32767.0
+			if sample > 32767 {
+				sample = 32767
+			} else if sample < -32768 {
+				sample = -32768
+			}
+			samples[i*2] = int16(sample)
+			samples[i*2+1] = int16(sample)
+		}
+	}
+
+	return samples, nil
+}
+
+// decodeAllocHybrid decodes a hybrid SILK+CELT encoded packet and allocates the result.
+func (d *Decoder) decodeAllocHybrid(packet []byte) ([]int16, error) {
+	if len(packet) < 2 {
+		return nil, ErrTooShortForTableOfContentsHeader
+	}
+
+	// Parse TOC header
+	toc := tocHeader(packet[0])
+	if toc.frameCode() != frameCodeOneFrame {
+		return nil, ErrUnsupportedFrameCode
+	}
+
+	// Validate channel configuration
+	stereo := toc.isStereo()
+	packetChannels := 1
+	if stereo {
+		packetChannels = 2
+	}
+	if packetChannels != d.channels {
+		return nil, fmt.Errorf("magnum: decode: %w", ErrChannelMismatch)
+	}
+
+	// Validate sample rate configuration
+	config := toc.configuration()
+	packetSampleRate := sampleRateForConfig(config)
+	if packetSampleRate != d.sampleRate {
+		return nil, fmt.Errorf("magnum: decode: %w", ErrSampleRateMismatch)
+	}
+
+	// Decode hybrid payload
+	hybridPayload := packet[1:]
+	floatSamples, err := d.hybridDecoder.DecodeFrame(hybridPayload)
+	if err != nil {
+		return nil, fmt.Errorf("magnum: decode: hybrid: %w", err)
 	}
 
 	// Convert float64 samples to int16

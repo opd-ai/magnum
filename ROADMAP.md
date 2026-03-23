@@ -204,7 +204,7 @@ libopus, pion/opus, or any other compliant encoder — not only `magnum`.
   mirroring the pion/opus API (`Decoder.Decode(in []byte, out []int16)`).
 - [x] Implement CELT decode path for configurations 24–31.
 - [x] Implement SILK decode path for configurations 0–15.
-- [ ] Implement hybrid decode path for configurations 16–23.
+- [x] Implement hybrid decode path for configurations 16–23.
 - [x] Implement PLC (zero-input synthesis on lost packets).
 - [x] Fuzz the decoder against random/malformed packets.
 
