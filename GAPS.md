@@ -4,141 +4,125 @@ This document identifies gaps between the project's stated goals and current imp
 
 ---
 
-## Range Coder Bit-Exactness Not Verified
+## Range Coder Bit-Exactness Not Verified Against libopus
 
 - **Stated Goal**: ROADMAP Milestone 1 states "Verify bit-exact output against the reference C implementation (`opus/celt/entenc.c`, `entdec.c`) for a shared set of test vectors."
-- **Current State**: `range_coder.go:1-203` passes internal round-trip tests (`range_coder_test.go`) but has not been validated against libopus output. The success criteria "output bytes match the reference implementation byte-for-byte" is not confirmed.
-- **Impact**: Future CELT/SILK integration (Milestones 2-3) depends on bit-exact range coding. If the current implementation diverges from RFC 6716 §4.1, encoded packets will be incompatible even when codec logic is added.
+- **Current State**: `range_coder.go:1-204` passes extensive internal round-trip tests (`range_coder_test.go`, `range_coder_vectors_test.go`) including 471 test cases covering uniform, skewed, large ft, and mixed encoding sequences. However, the test vectors were derived from RFC 6716 mathematical properties, not extracted from actual libopus byte output. The success criteria "output bytes match the reference implementation byte-for-byte" is not confirmed.
+- **Impact**: Future CELT/SILK integration (Milestones 2-3) depends on bit-exact range coding. If the current implementation diverges from libopus in edge cases (normalization timing, finalization byte ordering), encoded packets will be incompatible even when codec logic is added. This is **blocking for roadmap progress**.
 - **Closing the Gap**:
-  1. Extract test vectors from libopus by instrumenting `ec_enc`/`ec_dec` calls
-  2. Add `TestRangeCoderBitExact` comparing byte output against known vectors
-  3. Fix any divergences in normalize/finalize logic
-  4. Validation: `go test -v -run TestRangeCoderBitExact ./...`
-
----
-
-## SetBitrate Is Non-Functional
-
-- **Stated Goal**: README API table documents `SetBitrate(bitrate int)` — "Set target bitrate (bps, clamped to 6000–510000)."
-- **Current State**: `encoder.go:71-84` stores the bitrate value with proper clamping but the flate compressor uses `flate.DefaultCompression` (line 48). The `e.bitrate` field is never read after being set.
-- **Impact**: Users calling `SetBitrate(32000)` vs `SetBitrate(128000)` observe identical packet sizes. The API implies active control but delivers none.
-- **Closing the Gap**:
-  1. Short-term: Update README API table to say "Set target bitrate (stored for future CELT/SILK integration; currently unused)"
-  2. Long-term (Milestone 2e): Map bitrate to flate compression level as interim measure, or implement CELT bit allocation
-  3. Validation: Encode frames at different bitrates, assert identical output (confirms documented limitation)
-
----
-
-## pion/opus API Divergence: Application Parameter
-
-- **Stated Goal**: README states the encoder follows "pion/opus API patterns."
-- **Current State**: pion/opus `NewEncoder` (and libopus) accepts an Application type parameter (VoIP, Audio, LowDelay). magnum's `NewEncoder(sampleRate, channels int)` omits this parameter.
-- **Impact**: Code written for pion/opus cannot be migrated to magnum without signature changes. Future mode selection (SILK vs CELT preference) will require this parameter.
-- **Closing the Gap**:
-  1. Define `type Application int` with constants `ApplicationVoIP`, `ApplicationAudio`, `ApplicationLowDelay`
-  2. Add `NewEncoderWithApplication(sampleRate, channels int, app Application) (*Encoder, error)`
-  3. Keep `NewEncoder` as convenience wrapper defaulting to `ApplicationAudio`
-  4. Store `app` in Encoder struct for future codec selection
-  5. Validation: `go build ./...`
-
----
-
-## pion/opus API Divergence: Decoder Signature
-
-- **Stated Goal**: Follow pion/opus API patterns for decoder.
-- **Current State**: pion/opus `NewDecoder()` takes no arguments. magnum `NewDecoder(sampleRate, channels int)` requires configuration upfront.
-- **Impact**: Different instantiation pattern; migration requires code changes. However, magnum's approach enables validation of packet metadata against decoder configuration (detecting mismatches early).
-- **Closing the Gap**:
-  1. This is a deliberate design choice offering stricter validation
-  2. Document this divergence explicitly in `NewDecoder` godoc
-  3. Consider adding `NewDecoderAuto()` that infers config from first packet (optional)
-  4. Validation: Review godoc with `go doc magnum.NewDecoder`
+  1. Instrument libopus `ec_enc`/`ec_dec` functions to capture input symbols and output bytes
+  2. Generate test vectors: `{symbols: [{fl, fh, ft}...], expected_bytes: [...]}`
+  3. Add `TestRangeCoderBitExactLibopus` comparing magnum output byte-for-byte against captured vectors
+  4. Fix any divergences in normalize/finalize logic (likely in `Bytes()` flush sequence)
+  5. Validation: `go test -v -run TestRangeCoderBitExactLibopus ./...`
 
 ---
 
 ## Decoder Memory Allocation Per Packet
 
-- **Stated Goal**: Efficient audio processing for streaming applications.
-- **Current State**: `decoder.go:214` allocates `make([]int16, len(raw)/2)` on every decode call. Benchmark shows 47,496 B/op and 13 allocs per decode vs 3,608 B/op and 3 allocs per encode.
-- **Impact**: High-throughput applications (real-time audio) may see GC pressure. Encoder optimized allocations; decoder did not receive same treatment.
+- **Stated Goal**: Efficient audio processing for streaming applications; pion/opus API compatibility.
+- **Current State**: `decoder.go:222` allocates `make([]int16, len(raw)/2)` on every decode call. Benchmark shows 47,496 B/op and 13 allocs/op for decode vs 3,608 B/op and 3 allocs/op for encode. The decoder also allocates via `io.ReadAll` at `decoder.go:205`.
+- **Impact**: High-throughput applications (real-time audio, voice chat servers processing multiple streams) may experience GC pressure. The encoder received allocation optimization (reusable `outputBuf`, `flateW`, `rawPCM`); the decoder did not receive equivalent treatment.
 - **Closing the Gap**:
-  1. When `Decoder.Decode(packet, out)` is called with sufficient `out` buffer, samples are copied into it — this path already avoids the extra allocation
-  2. Document this optimization path in `Decoder.Decode` godoc
-  3. Consider adding buffer pool for `decodeInternal` raw byte slice
-  4. Validation: `go test -bench=BenchmarkDecode -benchmem ./...` — verify B/op when out buffer is pre-allocated
+  1. Add `rawBuffer []byte` field to `Decoder` struct for `io.ReadAll` target
+  2. Reuse existing buffer when capacity sufficient; grow only when needed
+  3. Document that `Decoder.Decode(packet, out)` with pre-allocated `out` avoids final sample allocation
+  4. Consider `sync.Pool` for raw byte buffer if decoder instances are short-lived
+  5. Validation: `go test -bench=BenchmarkDecode -benchmem ./...` — target ≤5 allocs/op
 
 ---
 
-## Missing Complexity Control
+## frameBuffer Queue Unbounded Growth
 
-- **Stated Goal**: pion/opus-compatible API patterns for audio encoding.
-- **Current State**: pion/opus offers `SetComplexity(complexity int)` to trade CPU for quality. magnum has no equivalent method.
-- **Impact**: Users cannot tune encoding performance vs quality. Less critical for current flate-based implementation but will matter for CELT.
+- **Stated Goal**: Robust frame buffering for streaming audio.
+- **Current State**: `frame.go:56` appends completed frames to `fb.ready` without any upper bound. If a caller feeds samples faster than they consume frames via `next()`, memory grows without limit.
+- **Impact**: In streaming scenarios with backpressure issues (e.g., encoder faster than network), memory could grow unboundedly. Current mitigation: initial `ready` capacity of 4 hints at expected usage, but no enforcement.
 - **Closing the Gap**:
-  1. Add `SetComplexity(complexity int)` as no-op placeholder with doc comment
-  2. Store value for future CELT integration
-  3. Validation: `go build ./...`
-
----
-
-## Missing Bandwidth Control
-
-- **Stated Goal**: pion/opus-compatible API patterns.
-- **Current State**: pion/opus offers bandwidth control (auto, narrowband, wideband, etc.). magnum derives bandwidth implicitly from sample rate at encoder creation.
-- **Impact**: Cannot force lower bandwidth for constrained channels without changing sample rate.
-- **Closing the Gap**:
-  1. Add `type Bandwidth int` with constants matching pion/opus
-  2. Add `SetBandwidth(bandwidth Bandwidth)` as placeholder
-  3. Document that bandwidth is currently derived from sample rate
-  4. Validation: `go build ./...`
+  1. Add optional `maxQueueDepth` parameter to `newFrameBuffer`
+  2. When queue full, either: (a) block/return error, or (b) drop oldest frame with warning
+  3. For backwards compatibility, default to unbounded (current behavior) when 0
+  4. Validation: Add test feeding 1000+ frames without draining; verify behavior matches config
 
 ---
 
 ## ROADMAP Milestones 2-7 Not Implemented
 
 - **Stated Goal**: ROADMAP.md documents 7 milestones toward RFC 6716 compliance and libopus interoperability.
-- **Current State**: Only Milestone 1 (Range Coder) is complete. Milestones 2-7 (CELT, SILK, Hybrid, Variable durations, Standard Decoder, Conformance) are not implemented.
-- **Impact**: Packets are **not interoperable** with standard Opus decoders. This is clearly documented but represents the largest functional gap for users expecting Opus compatibility.
-- **Closing the Gap**:
-  1. Milestone 2: Implement CELT (MDCT, band energy, PVQ) for 48 kHz path
-  2. Milestone 3: Implement SILK (LPC, pitch, excitation) for 8/16 kHz
-  3. Milestone 4: Implement Hybrid mode for 24 kHz
-  4. Milestone 5: Support variable frame durations and multi-frame packets
-  5. Milestone 6: Expose Decoder that handles libopus packets
-  6. Milestone 7: Pass official Opus test vectors
-  7. Each milestone has detailed tasks in ROADMAP.md
+- **Current State**: Only Milestone 1 (Range Coder) is implemented. Milestones 2-7 remain open:
+  - Milestone 2: CELT encoder (MDCT, band energy, PVQ) — ❌ not started
+  - Milestone 3: SILK encoder (LPC, pitch, excitation) — ❌ not started
+  - Milestone 4: Hybrid mode (SILK + CELT) — ❌ not started
+  - Milestone 5: Variable frame durations, multi-frame packets — ❌ not started
+  - Milestone 6: Standard Decoder (libopus packet decoding) — ❌ not started
+  - Milestone 7: Conformance testing, official test vectors — ❌ not started
+- **Impact**: Packets are **not interoperable** with standard Opus decoders. This is **the primary limitation** but is clearly documented in README ("Not RFC 6716 compliant"). Users adopting magnum understand this constraint.
+- **Closing the Gap**: Follow ROADMAP.md milestone plan in order:
+  1. Complete Milestone 1 (verify range coder bit-exactness — see Gap #1)
+  2. Implement Milestone 2 (CELT) for 48 kHz path → achieves libopus interop for fullband
+  3. Implement Milestone 3 (SILK) for 8/16 kHz → achieves narrowband/wideband interop
+  4. Milestones 4-7 as specified in ROADMAP.md
+  5. Validation per milestone: `opusdec` / `opus_demo` / official test vectors
+
+---
+
+## SetBitrate, SetComplexity, SetBandwidth Are No-ops
+
+- **Stated Goal**: README API table documents these methods for pion/opus API compatibility.
+- **Current State**: All three methods correctly store values but have no effect on encoding output. This is **explicitly documented** in code comments (`encoder.go:143-144`, `encoder.go:164-165`, `encoder.go:185-186`) and README ("Stored for future CELT/SILK integration; currently unused").
+- **Impact**: Users calling `SetBitrate(32000)` vs `SetBitrate(128000)` observe identical packet sizes. However, this is **not a gap** — the behavior is correctly documented. The API surface exists for forward compatibility.
+- **Closing the Gap**: No immediate action needed. When Milestone 2 (CELT) is implemented:
+  1. Wire `SetBitrate` to CELT bit allocation table
+  2. Wire `SetComplexity` to CELT search depth parameters
+  3. Wire `SetBandwidth` to band cutoff selection
+  4. Update documentation to reflect active usage
+  5. Validation: Encode same audio at different bitrates; verify different packet sizes
+
+---
+
+## pion/opus Decoder API Divergence (By Design)
+
+- **Stated Goal**: Follow pion/opus API patterns.
+- **Current State**: pion/opus `NewDecoder()` takes no arguments; magnum `NewDecoder(sampleRate, channels int)` requires configuration upfront. This is a **deliberate design choice** documented in `decoder.go:37-43`.
+- **Impact**: Code written for pion/opus cannot migrate to magnum without API changes. However, magnum's approach enables early validation — a 16 kHz decoder receiving a 48 kHz packet gets `ErrSampleRateMismatch` instead of silent corruption.
+- **Closing the Gap**: This is **by design**, not a defect. Options:
+  1. Document the divergence in README API table (currently implicit)
+  2. Optionally add `NewDecoderAuto()` that infers config from first packet (more complex)
+  3. Validation: Review godoc with `go doc magnum.NewDecoder`
 
 ---
 
 ## Gap Summary by Priority
 
-| Gap | Severity | Effort | ROADMAP Alignment | Status |
-|-----|----------|--------|-------------------|--------|
-| Range coder bit-exactness | High | Medium | Milestone 1 (partial) | Open |
-| SetBitrate non-functional | Medium | Low | Milestone 2e | Open |
-| No Application parameter | Medium | Low | pion/opus compat | Open |
-| Decoder signature divergence | Low | Low | pion/opus compat | By Design |
-| Decoder memory allocation | Low | Medium | Performance | Partial (workaround exists) |
-| No complexity control | Low | Low | pion/opus compat | Open |
-| No bandwidth control | Low | Low | pion/opus compat | Open |
-| ROADMAP Milestones 2-7 | — | High | Milestones 2-7 | Open |
+| Gap | Severity | Effort | ROADMAP | Status |
+|-----|----------|--------|---------|--------|
+| Range coder bit-exactness | High | Medium | Milestone 1 | Open |
+| Decoder memory allocation | Medium | Medium | — | Open |
+| frameBuffer unbounded growth | Medium | Low | — | Open |
+| ROADMAP Milestones 2-7 | — | High | Milestones 2-7 | Open (roadmap) |
+| SetBitrate/Complexity/Bandwidth no-ops | — | — | Milestone 2+ | By Design |
+| Decoder API divergence | — | — | — | By Design |
 
 ---
 
 ## Recommendations
 
-1. **Immediate** (before v1.0 release):
-   - Add range coder bit-exact test vectors
-   - Update README to clarify SetBitrate is a placeholder
-   - Add placeholder methods for Complexity and Bandwidth
+### Immediate (before v1.0 release)
 
-2. **Short-term** (Milestone 2):
-   - Implement CELT encoder for 48 kHz to achieve libopus interoperability
-   - Wire SetBitrate to CELT bit allocation
+1. Add libopus-derived test vectors for range coder bit-exactness verification
+2. Reduce decoder allocations by adding buffer reuse
+3. Document frameBuffer queue behavior; consider optional bounds
 
-3. **Long-term** (Milestones 3-7):
-   - Complete SILK, Hybrid, variable durations
-   - Pass official Opus conformance tests
+### Short-term (Milestone 2)
+
+1. Implement CELT encoder for 48 kHz fullband path
+2. Achieve libopus interoperability for high-quality audio
+3. Wire SetBitrate to CELT bit allocation
+
+### Long-term (Milestones 3-7)
+
+1. Complete SILK encoder for narrowband/wideband
+2. Implement hybrid mode, variable frame durations
+3. Pass official Opus conformance test suite
 
 ---
 
