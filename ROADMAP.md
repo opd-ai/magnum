@@ -64,10 +64,10 @@ audio. It is transform-based (MDCT → band energy → PVQ spectral coding).
 ### Tasks
 
 #### 2a — MDCT
-- [ ] Implement the windowed MDCT (Modified Discrete Cosine Transform) over
+- [x] Implement the windowed MDCT (Modified Discrete Cosine Transform) over
   the frame sizes used by Opus: 120, 240, 480, 960, 1920 samples
   (corresponding to 2.5, 5, 10, 20, 40 ms at 48 kHz).
-- [ ] Implement the inverse MDCT for the decoder path.
+- [x] Implement the inverse MDCT for the decoder path.
 - [ ] Validate against the reference `celt/mdct.c` test vectors.
 
 #### 2b — Band energy encoding
