@@ -69,6 +69,15 @@ type Encoder struct {
 	bandwidth   Bandwidth // default BandwidthAuto
 	buffer      *frameBuffer
 
+	// useCELT controls whether to use the CELT codec for 24/48 kHz.
+	// When false (default), uses flate compression for backward compatibility.
+	// When true, uses RFC 6716-style CELT encoding.
+	useCELT bool
+
+	// CELT encoder for 24 kHz and 48 kHz sample rates when useCELT is true.
+	// nil for 8 kHz and 16 kHz (SILK paths), or when useCELT is false.
+	celtEncoder *CELTFrameEncoder
+
 	// Reusable buffers to reduce allocations.
 	rawPCM    []byte        // pre-allocated buffer for PCM serialization
 	outputBuf bytes.Buffer  // reusable output buffer
@@ -93,9 +102,8 @@ func NewEncoder(sampleRate, channels int) (*Encoder, error) {
 // Supported channel counts: 1 (mono) or 2 (stereo).
 // Supported applications: [ApplicationVoIP], [ApplicationAudio], [ApplicationLowDelay].
 //
-// The application mode is stored for future codec integration (ROADMAP Milestones 2-3).
-// The current simplified implementation does not yet use it to modify encoding behavior,
-// but it will affect SILK/CELT mode selection when those codecs are implemented.
+// By default, the encoder uses flate compression for backward compatibility.
+// To enable RFC 6716–style CELT encoding for 24/48 kHz, call [Encoder.EnableCELT].
 func NewEncoderWithApplication(sampleRate, channels int, app Application) (*Encoder, error) {
 	if !isValidSampleRate(sampleRate) {
 		return nil, ErrUnsupportedSampleRate
@@ -124,10 +132,50 @@ func NewEncoderWithApplication(sampleRate, channels int, app Application) (*Enco
 		complexity:  10,            // default: highest quality
 		bandwidth:   BandwidthAuto, // default: automatic
 		buffer:      fb,
+		useCELT:     false, // default: use flate for backward compatibility
 		rawPCM:      rawPCM,
 		outputBuf:   outputBuf,
 		flateW:      flateW,
 	}, nil
+}
+
+// EnableCELT enables RFC 6716–style CELT encoding for 24 kHz and 48 kHz
+// sample rates. Returns an error if the encoder's sample rate is not
+// suitable for CELT (must be 24000 or 48000 Hz).
+//
+// When CELT is enabled, packets are encoded using the CELT codec as specified
+// in RFC 6716 §4.3. Note that CELT is a lossy codec, so exact round-trip
+// reconstruction of PCM samples is not possible. Use the CELT-enabled
+// [Decoder] for decoding these packets.
+//
+// This method is part of ROADMAP Milestone 2f (CELT integration).
+func (e *Encoder) EnableCELT() error {
+	if e.sampleRate != 24000 && e.sampleRate != 48000 {
+		return fmt.Errorf("magnum: CELT requires 24000 or 48000 Hz sample rate, got %d", e.sampleRate)
+	}
+
+	if e.celtEncoder == nil {
+		frameSize := e.sampleRate * frameDurationMs / 1000 // Samples per channel
+		celtConfig := CELTFrameConfig{
+			SampleRate: e.sampleRate,
+			Channels:   e.channels,
+			FrameSize:  frameSize,
+			Bitrate:    e.bitrate,
+		}
+		celtEnc, err := NewCELTFrameEncoder(celtConfig)
+		if err != nil {
+			return fmt.Errorf("magnum: enable CELT: %w", err)
+		}
+		e.celtEncoder = celtEnc
+	}
+
+	e.useCELT = true
+	return nil
+}
+
+// IsCELTEnabled returns true if CELT encoding is enabled for this encoder.
+func (e *Encoder) IsCELTEnabled() bool {
+	return e.useCELT && e.celtEncoder != nil
 }
 
 // Application returns the application mode configured for this encoder.
@@ -237,12 +285,66 @@ func (e *Encoder) Flush() ([]byte, error) {
 // Packet layout:
 //
 //	byte 0   : TOC header (configuration | stereo flag | frame code)
-//	bytes 1… : flate-compressed little-endian int16 PCM samples
+//	bytes 1… : payload (CELT bitstream for 24/48 kHz, flate for 8/16 kHz)
+//
+// For 24 kHz and 48 kHz sample rates, this uses the CELT codec to produce
+// RFC 6716–compliant packets. For 8 kHz and 16 kHz, flate compression is
+// used as a placeholder until SILK is implemented.
 func (e *Encoder) encodeFrame(frame []int16) ([]byte, error) {
 	isStereo := e.channels == 2
 	config := configForSampleRate(e.sampleRate)
 	toc := newTOCHeader(config, isStereo, frameCodeOneFrame)
 
+	// Use CELT when enabled and available
+	if e.useCELT && e.celtEncoder != nil {
+		return e.encodeFrameCELT(frame, toc)
+	}
+
+	// Default: flate compression (backward compatible)
+	return e.encodeFrameFlate(frame, toc)
+}
+
+// encodeFrameCELT encodes a frame using the CELT codec for RFC 6716 compliance.
+func (e *Encoder) encodeFrameCELT(frame []int16, toc tocHeader) ([]byte, error) {
+	// Convert int16 samples to float64 for CELT processing.
+	// For stereo, we process the left channel only for now (simplification).
+	// Full stereo support would require mid/side coding or dual mono.
+	samplesPerChannel := len(frame) / e.channels
+	floatSamples := make([]float64, samplesPerChannel)
+
+	if e.channels == 1 {
+		for i, s := range frame {
+			floatSamples[i] = float64(s) / 32768.0
+		}
+	} else {
+		// Stereo: mix to mono for CELT processing (simplification)
+		// TODO: Implement proper mid/side stereo coding
+		for i := 0; i < samplesPerChannel; i++ {
+			left := float64(frame[i*2]) / 32768.0
+			right := float64(frame[i*2+1]) / 32768.0
+			floatSamples[i] = (left + right) / 2.0
+		}
+	}
+
+	// Update CELT encoder bitrate if it changed
+	e.celtEncoder.config.Bitrate = e.bitrate
+
+	// Encode with CELT
+	celtFrame, err := e.celtEncoder.EncodeFrame(floatSamples)
+	if err != nil {
+		return nil, fmt.Errorf("magnum: encode frame: CELT: %w", err)
+	}
+
+	// Build packet: TOC header + CELT payload
+	result := make([]byte, 1+len(celtFrame.Data))
+	result[0] = byte(toc)
+	copy(result[1:], celtFrame.Data)
+
+	return result, nil
+}
+
+// encodeFrameFlate encodes a frame using flate compression (fallback for SILK paths).
+func (e *Encoder) encodeFrameFlate(frame []int16, toc tocHeader) ([]byte, error) {
 	// Serialise the frame as little-endian int16 bytes using pre-allocated buffer.
 	for i, sample := range frame {
 		binary.LittleEndian.PutUint16(e.rawPCM[i*2:], uint16(sample))

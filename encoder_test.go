@@ -714,3 +714,128 @@ func BenchmarkDecoderDecode(b *testing.B) {
 		}
 	}
 }
+
+// TestCELTEncoderDecoderIntegration tests the CELT encoder/decoder integration
+// introduced in ROADMAP Milestone 2f. Unlike flate-based encoding, CELT is lossy
+// so we cannot expect exact sample reconstruction. Instead, we verify that the
+// encoded packet can be decoded without error and produces output of the expected
+// size with reasonable signal quality (non-zero energy).
+func TestCELTEncoderDecoderIntegration(t *testing.T) {
+	t.Parallel()
+
+	// Test 48 kHz mono
+	t.Run("48kHz_mono", func(t *testing.T) {
+		enc, err := NewEncoder(48000, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := enc.EnableCELT(); err != nil {
+			t.Fatalf("EnableCELT: %v", err)
+		}
+		if !enc.IsCELTEnabled() {
+			t.Error("IsCELTEnabled should return true after EnableCELT")
+		}
+
+		dec, err := NewDecoder(48000, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := dec.EnableCELT(); err != nil {
+			t.Fatalf("Decoder EnableCELT: %v", err)
+		}
+
+		// Generate a test signal (sine wave)
+		pcm := make([]int16, 960)
+		for i := range pcm {
+			pcm[i] = int16(10000.0 * sinTable(float64(i)*2*3.14159/100))
+		}
+
+		packet, err := enc.Encode(pcm)
+		if err != nil {
+			t.Fatalf("Encode: %v", err)
+		}
+		if len(packet) < 2 {
+			t.Fatalf("Encoded packet too short: %d bytes", len(packet))
+		}
+
+		decoded, err := dec.DecodeAlloc(packet)
+		if err != nil {
+			t.Fatalf("DecodeAlloc: %v", err)
+		}
+
+		// CELT produces N/2 samples due to MDCT overlap-add
+		// The decoded length may differ from input
+		if len(decoded) == 0 {
+			t.Error("Decoded packet has zero samples")
+		}
+
+		// Check that we have non-zero energy (signal was decoded)
+		var energy float64
+		for _, s := range decoded {
+			energy += float64(s) * float64(s)
+		}
+		if energy == 0 {
+			t.Error("Decoded signal has zero energy")
+		}
+	})
+
+	// Test 24 kHz mono
+	t.Run("24kHz_mono", func(t *testing.T) {
+		enc, err := NewEncoder(24000, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := enc.EnableCELT(); err != nil {
+			t.Fatalf("EnableCELT: %v", err)
+		}
+
+		dec, err := NewDecoder(24000, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := dec.EnableCELT(); err != nil {
+			t.Fatalf("Decoder EnableCELT: %v", err)
+		}
+
+		// 24 kHz mono: 480 samples per 20ms frame
+		pcm := make([]int16, 480)
+		for i := range pcm {
+			pcm[i] = int16(10000.0 * sinTable(float64(i)*2*3.14159/50))
+		}
+
+		packet, err := enc.Encode(pcm)
+		if err != nil {
+			t.Fatalf("Encode: %v", err)
+		}
+
+		decoded, err := dec.DecodeAlloc(packet)
+		if err != nil {
+			t.Fatalf("DecodeAlloc: %v", err)
+		}
+
+		if len(decoded) == 0 {
+			t.Error("Decoded packet has zero samples")
+		}
+	})
+
+	// Test that EnableCELT fails for 8 kHz (SILK-only)
+	t.Run("8kHz_not_supported", func(t *testing.T) {
+		enc, err := NewEncoder(8000, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := enc.EnableCELT(); err == nil {
+			t.Error("EnableCELT should fail for 8 kHz")
+		}
+	})
+}
+
+// sinTable returns sin(x) - a simple sine function for test signal generation
+func sinTable(x float64) float64 {
+	// Use Taylor series approximation for simplicity
+	x = x - float64(int(x/(2*3.14159)))*2*3.14159
+	if x > 3.14159 {
+		x -= 2 * 3.14159
+	}
+	return x - x*x*x/6 + x*x*x*x*x/120
+}

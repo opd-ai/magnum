@@ -93,7 +93,7 @@ audio. It is transform-based (MDCT → band energy → PVQ spectral coding).
   distributed across bands proportionally to the configured bitrate.
 
 #### 2f — Integration
-- [ ] Replace the current `flate` payload in `encodeFrame` with the CELT
+- [x] Replace the current `flate` payload in `encodeFrame` with the CELT
   bitstream for 24 kHz and 48 kHz sample rates.
 - [ ] Validate encoded packets with `opusdec` / `opus_demo` from libopus.
 

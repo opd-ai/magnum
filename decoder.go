@@ -24,11 +24,14 @@ const maxDecompressedBytes = 65536
 // simple use cases, the standalone [Decode] and [DecodeWithInfo] functions
 // may be more convenient.
 //
-// Note: This decoder only handles packets produced by magnum's Encoder.
-// It does not decode packets from standard Opus encoders (libopus, etc.).
+// By default, the decoder uses flate decompression for backward compatibility.
+// To decode CELT-encoded packets, call [Decoder.EnableCELT].
 type Decoder struct {
 	sampleRate int
 	channels   int
+	// useCELT controls whether to use the CELT codec for decoding.
+	// When false (default), uses flate decompression.
+	useCELT bool
 	// rawBuffer is a reusable buffer for decompressed PCM bytes.
 	// It reduces allocations when decoding multiple packets.
 	rawBuffer []byte
@@ -36,6 +39,8 @@ type Decoder struct {
 	readChunk []byte
 	// flateR is a reusable flate decompressor.
 	flateR io.ReadCloser
+	// celtDecoder for 24 kHz and 48 kHz sample rates when useCELT is true.
+	celtDecoder *CELTFrameDecoder
 }
 
 // NewDecoder creates a new Decoder for the given sample rate and channel count.
@@ -43,12 +48,8 @@ type Decoder struct {
 // Supported sample rates: 8000, 16000, 24000, 48000 Hz.
 // Supported channel counts: 1 (mono) or 2 (stereo).
 //
-// Design note: Unlike pion/opus (which uses a parameterless constructor), magnum
-// requires sample rate and channels upfront. This "configuration-first" model
-// enables early validation of incoming packets against expected parameters,
-// catching mismatches (e.g., decoding a stereo packet with a mono decoder)
-// as explicit errors rather than silent data corruption. This design choice
-// prioritizes safety and explicit error handling over API similarity.
+// By default, the decoder uses flate decompression for backward compatibility.
+// To decode CELT-encoded packets for 24/48 kHz, call [Decoder.EnableCELT].
 func NewDecoder(sampleRate, channels int) (*Decoder, error) {
 	if !isValidSampleRate(sampleRate) {
 		return nil, ErrUnsupportedSampleRate
@@ -61,13 +62,50 @@ func NewDecoder(sampleRate, channels int) (*Decoder, error) {
 	initialCap := sampleRate * 20 / 1000 * channels * 2
 	// Initialize flate reader with empty input; it will be reset on each decode.
 	flateR := flate.NewReader(bytes.NewReader(nil))
+
 	return &Decoder{
 		sampleRate: sampleRate,
 		channels:   channels,
+		useCELT:    false, // default: use flate for backward compatibility
 		rawBuffer:  make([]byte, 0, initialCap),
 		readChunk:  make([]byte, 4096),
 		flateR:     flateR,
 	}, nil
+}
+
+// EnableCELT enables RFC 6716–style CELT decoding for 24 kHz and 48 kHz
+// sample rates. Returns an error if the decoder's sample rate is not
+// suitable for CELT (must be 24000 or 48000 Hz).
+//
+// When CELT is enabled, packets are decoded using the CELT codec as specified
+// in RFC 6716 §4.3. Use this with packets from a CELT-enabled [Encoder].
+func (d *Decoder) EnableCELT() error {
+	if d.sampleRate != 24000 && d.sampleRate != 48000 {
+		return fmt.Errorf("magnum: CELT requires 24000 or 48000 Hz sample rate, got %d", d.sampleRate)
+	}
+
+	if d.celtDecoder == nil {
+		frameSize := d.sampleRate * 20 / 1000 // Samples per channel for 20 ms
+		celtConfig := CELTFrameConfig{
+			SampleRate: d.sampleRate,
+			Channels:   d.channels,
+			FrameSize:  frameSize,
+			Bitrate:    64000, // Default bitrate
+		}
+		celtDec, err := NewCELTFrameDecoder(celtConfig)
+		if err != nil {
+			return fmt.Errorf("magnum: enable CELT: %w", err)
+		}
+		d.celtDecoder = celtDec
+	}
+
+	d.useCELT = true
+	return nil
+}
+
+// IsCELTEnabled returns true if CELT decoding is enabled for this decoder.
+func (d *Decoder) IsCELTEnabled() bool {
+	return d.useCELT && d.celtDecoder != nil
 }
 
 // Decode decodes an Opus packet into the provided output buffer.
@@ -91,6 +129,87 @@ func NewDecoder(sampleRate, channels int) (*Decoder, error) {
 //
 // This method follows the pion/opus Decoder.Decode signature pattern.
 func (d *Decoder) Decode(packet []byte, out []int16) (int, error) {
+	// Use CELT when enabled and available
+	if d.useCELT && d.celtDecoder != nil {
+		return d.decodeCELT(packet, out)
+	}
+
+	// Fallback to flate for 8 kHz and 16 kHz
+	return d.decodeFlate(packet, out)
+}
+
+// decodeCELT decodes a CELT-encoded packet.
+func (d *Decoder) decodeCELT(packet []byte, out []int16) (int, error) {
+	if len(packet) < 2 {
+		return 0, ErrTooShortForTableOfContentsHeader
+	}
+
+	// Parse TOC header
+	toc := tocHeader(packet[0])
+	if toc.frameCode() != frameCodeOneFrame {
+		return 0, ErrUnsupportedFrameCode
+	}
+
+	// Validate channel configuration
+	stereo := toc.isStereo()
+	packetChannels := 1
+	if stereo {
+		packetChannels = 2
+	}
+	if packetChannels != d.channels {
+		return 0, fmt.Errorf("magnum: decode: %w", ErrChannelMismatch)
+	}
+
+	// Validate sample rate configuration
+	config := toc.configuration()
+	packetSampleRate := sampleRateForConfig(config)
+	if packetSampleRate != d.sampleRate {
+		return 0, fmt.Errorf("magnum: decode: %w", ErrSampleRateMismatch)
+	}
+
+	// Decode CELT payload
+	celtPayload := packet[1:]
+	floatSamples, err := d.celtDecoder.DecodeFrame(celtPayload)
+	if err != nil {
+		return 0, fmt.Errorf("magnum: decode: CELT: %w", err)
+	}
+
+	// Convert float64 samples to int16
+	numSamples := len(floatSamples) * d.channels
+	if d.channels == 1 {
+		if out != nil && len(out) >= numSamples {
+			for i, s := range floatSamples {
+				// Clamp and convert
+				sample := s * 32767.0
+				if sample > 32767 {
+					sample = 32767
+				} else if sample < -32768 {
+					sample = -32768
+				}
+				out[i] = int16(sample)
+			}
+		}
+	} else {
+		// Stereo: duplicate mono to both channels (simplification)
+		if out != nil && len(out) >= numSamples {
+			for i, s := range floatSamples {
+				sample := s * 32767.0
+				if sample > 32767 {
+					sample = 32767
+				} else if sample < -32768 {
+					sample = -32768
+				}
+				out[i*2] = int16(sample)
+				out[i*2+1] = int16(sample)
+			}
+		}
+	}
+
+	return numSamples, nil
+}
+
+// decodeFlate decodes a flate-compressed packet (fallback for SILK paths).
+func (d *Decoder) decodeFlate(packet []byte, out []int16) (int, error) {
 	// Reuse the decoder's internal buffers and flate reader for decompression.
 	raw, stereo, config, err := decodePayloadWithReader(packet, d.rawBuffer, d.readChunk, d.flateR)
 	if err != nil {
@@ -144,6 +263,84 @@ func (d *Decoder) Decode(packet []byte, out []int16) (int, error) {
 // Like [Decoder.Decode], this method validates the packet's channel and sample
 // rate configuration against the decoder's settings.
 func (d *Decoder) DecodeAlloc(packet []byte) ([]int16, error) {
+	// Use CELT when enabled and available
+	if d.useCELT && d.celtDecoder != nil {
+		return d.decodeAllocCELT(packet)
+	}
+
+	// Default: flate decompression (backward compatible)
+	return d.decodeAllocFlate(packet)
+}
+
+// decodeAllocCELT decodes a CELT-encoded packet and allocates the result.
+func (d *Decoder) decodeAllocCELT(packet []byte) ([]int16, error) {
+	if len(packet) < 2 {
+		return nil, ErrTooShortForTableOfContentsHeader
+	}
+
+	// Parse TOC header
+	toc := tocHeader(packet[0])
+	if toc.frameCode() != frameCodeOneFrame {
+		return nil, ErrUnsupportedFrameCode
+	}
+
+	// Validate channel configuration
+	stereo := toc.isStereo()
+	packetChannels := 1
+	if stereo {
+		packetChannels = 2
+	}
+	if packetChannels != d.channels {
+		return nil, fmt.Errorf("magnum: decode: %w", ErrChannelMismatch)
+	}
+
+	// Validate sample rate configuration
+	config := toc.configuration()
+	packetSampleRate := sampleRateForConfig(config)
+	if packetSampleRate != d.sampleRate {
+		return nil, fmt.Errorf("magnum: decode: %w", ErrSampleRateMismatch)
+	}
+
+	// Decode CELT payload
+	celtPayload := packet[1:]
+	floatSamples, err := d.celtDecoder.DecodeFrame(celtPayload)
+	if err != nil {
+		return nil, fmt.Errorf("magnum: decode: CELT: %w", err)
+	}
+
+	// Convert float64 samples to int16
+	var samples []int16
+	if d.channels == 1 {
+		samples = make([]int16, len(floatSamples))
+		for i, s := range floatSamples {
+			sample := s * 32767.0
+			if sample > 32767 {
+				sample = 32767
+			} else if sample < -32768 {
+				sample = -32768
+			}
+			samples[i] = int16(sample)
+		}
+	} else {
+		// Stereo: duplicate mono to both channels (simplification)
+		samples = make([]int16, len(floatSamples)*2)
+		for i, s := range floatSamples {
+			sample := s * 32767.0
+			if sample > 32767 {
+				sample = 32767
+			} else if sample < -32768 {
+				sample = -32768
+			}
+			samples[i*2] = int16(sample)
+			samples[i*2+1] = int16(sample)
+		}
+	}
+
+	return samples, nil
+}
+
+// decodeAllocFlate decodes a flate-compressed packet and allocates the result.
+func (d *Decoder) decodeAllocFlate(packet []byte) ([]int16, error) {
 	// Reuse the decoder's internal buffers and flate reader for decompression.
 	raw, stereo, config, err := decodePayloadWithReader(packet, d.rawBuffer, d.readChunk, d.flateR)
 	if err != nil {
