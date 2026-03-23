@@ -612,3 +612,37 @@ func BenchmarkDecode(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkDecoderDecode measures Decoder.Decode performance with buffer reuse.
+// This benchmark demonstrates the performance benefit of using the Decoder type
+// with a pre-allocated output buffer versus the standalone Decode function.
+func BenchmarkDecoderDecode(b *testing.B) {
+	enc, err := NewEncoder(48000, 1)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	pcm := make([]int16, 960)
+	for i := range pcm {
+		pcm[i] = int16(i % 1000)
+	}
+	packet, err := enc.Encode(pcm)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	dec, err := NewDecoder(48000, 1)
+	if err != nil {
+		b.Fatal(err)
+	}
+	out := make([]int16, 960)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := dec.Decode(packet, out)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}

@@ -28,6 +28,13 @@ const maxDecompressedBytes = 65536
 type Decoder struct {
 	sampleRate int
 	channels   int
+	// rawBuffer is a reusable buffer for decompressed PCM bytes.
+	// It reduces allocations when decoding multiple packets.
+	rawBuffer []byte
+	// readChunk is a reusable buffer for reading decompressed data in chunks.
+	readChunk []byte
+	// flateR is a reusable flate decompressor.
+	flateR io.ReadCloser
 }
 
 // NewDecoder creates a new Decoder for the given sample rate and channel count.
@@ -48,9 +55,17 @@ func NewDecoder(sampleRate, channels int) (*Decoder, error) {
 	if channels < 1 || channels > 2 {
 		return nil, ErrUnsupportedChannelCount
 	}
+	// Pre-allocate rawBuffer for typical frame sizes.
+	// 48 kHz stereo 20 ms = 1920 samples × 2 bytes = 3840 bytes.
+	initialCap := sampleRate * 20 / 1000 * channels * 2
+	// Initialize flate reader with empty input; it will be reset on each decode.
+	flateR := flate.NewReader(bytes.NewReader(nil))
 	return &Decoder{
 		sampleRate: sampleRate,
 		channels:   channels,
+		rawBuffer:  make([]byte, 0, initialCap),
+		readChunk:  make([]byte, 4096),
+		flateR:     flateR,
 	}, nil
 }
 
@@ -75,10 +90,13 @@ func NewDecoder(sampleRate, channels int) (*Decoder, error) {
 //
 // This method follows the pion/opus Decoder.Decode signature pattern.
 func (d *Decoder) Decode(packet []byte, out []int16) (int, error) {
-	samples, stereo, config, err := decodeInternal(packet)
+	// Reuse the decoder's internal buffers for decompression.
+	raw, stereo, config, err := decodePayload(packet, d.rawBuffer, d.readChunk)
 	if err != nil {
 		return 0, err
 	}
+	// Update rawBuffer to retain capacity for next decode.
+	d.rawBuffer = raw[:0]
 
 	// Validate channel configuration.
 	packetChannels := 1
@@ -95,17 +113,24 @@ func (d *Decoder) Decode(packet []byte, out []int16) (int, error) {
 		return 0, ErrSampleRateMismatch
 	}
 
-	// If out is provided and large enough, copy into it.
-	if out != nil && len(out) >= len(samples) {
-		copy(out, samples)
-		return len(samples), nil
+	// Convert raw bytes to int16 samples.
+	numSamples := len(raw) / 2
+
+	// If out is provided and large enough, decode directly into it.
+	if out != nil && len(out) >= numSamples {
+		for i := 0; i < numSamples; i++ {
+			out[i] = int16(binary.LittleEndian.Uint16(raw[i*2:]))
+		}
+		return numSamples, nil
 	}
 
-	// out is nil or undersized; copy what we can (if anything).
+	// out is nil or undersized; decode what we can (if anything).
 	if out != nil {
-		copy(out, samples)
+		for i := 0; i < len(out) && i < numSamples; i++ {
+			out[i] = int16(binary.LittleEndian.Uint16(raw[i*2:]))
+		}
 	}
-	return len(samples), nil
+	return numSamples, nil
 }
 
 // DecodeAlloc decodes an Opus packet and returns the decoded samples directly.
@@ -118,10 +143,13 @@ func (d *Decoder) Decode(packet []byte, out []int16) (int, error) {
 // Like [Decoder.Decode], this method validates the packet's channel and sample
 // rate configuration against the decoder's settings.
 func (d *Decoder) DecodeAlloc(packet []byte) ([]int16, error) {
-	samples, stereo, config, err := decodeInternal(packet)
+	// Reuse the decoder's internal buffers for decompression.
+	raw, stereo, config, err := decodePayload(packet, d.rawBuffer, d.readChunk)
 	if err != nil {
 		return nil, err
 	}
+	// Update rawBuffer to retain capacity for next decode.
+	d.rawBuffer = raw[:0]
 
 	// Validate channel configuration.
 	packetChannels := 1
@@ -138,6 +166,11 @@ func (d *Decoder) DecodeAlloc(packet []byte) ([]int16, error) {
 		return nil, ErrSampleRateMismatch
 	}
 
+	// Convert raw bytes to int16 samples.
+	samples := make([]int16, len(raw)/2)
+	for i := range samples {
+		samples[i] = int16(binary.LittleEndian.Uint16(raw[i*2:]))
+	}
 	return samples, nil
 }
 
@@ -182,6 +215,23 @@ func DecodeWithInfo(packet []byte) (samples []int16, stereo bool, err error) {
 // decodeInternal is the shared decode implementation used by all decode functions.
 // It returns the decoded samples, stereo flag, and configuration for validation.
 func decodeInternal(packet []byte) (samples []int16, stereo bool, config Configuration, err error) {
+	raw, stereo, config, err := decodePayload(packet, nil, nil)
+	if err != nil {
+		return nil, false, 0, err
+	}
+
+	samples = make([]int16, len(raw)/2)
+	for i := range samples {
+		samples[i] = int16(binary.LittleEndian.Uint16(raw[i*2:]))
+	}
+	return samples, stereo, config, nil
+}
+
+// decodePayload decompresses the packet payload into raw PCM bytes.
+// If buf is provided and has sufficient capacity, it is reused to reduce allocations.
+// If chunk is provided, it is used as the read buffer; otherwise a temporary one is allocated.
+// Returns the raw bytes slice (possibly a resliced buf), stereo flag, and config.
+func decodePayload(packet, buf, chunk []byte) (raw []byte, stereo bool, config Configuration, err error) {
 	if len(packet) < 1 {
 		return nil, false, 0, ErrTooShortForTableOfContentsHeader
 	}
@@ -201,27 +251,40 @@ func decodeInternal(packet []byte) (samples []int16, stereo bool, config Configu
 	// Limit decompressed output to maxDecompressedBytes+1 so that zip-bomb
 	// payloads are caught without exhausting memory.
 	r := flate.NewReader(bytes.NewReader(packet[1:]))
-	limited := io.LimitReader(r, int64(maxDecompressedBytes)+1)
-	raw, readErr := io.ReadAll(limited)
-	closeErr := r.Close()
+	defer r.Close()
 
-	if readErr != nil {
-		return nil, false, 0, readErr
-	}
-	if closeErr != nil {
-		return nil, false, 0, closeErr
-	}
-	if len(raw) > maxDecompressedBytes {
-		return nil, false, 0, ErrPayloadTooLarge
+	// Use provided buffer if available, otherwise allocate.
+	if buf != nil {
+		buf = buf[:0]
+	} else {
+		buf = make([]byte, 0, 4096)
 	}
 
-	if len(raw)%2 != 0 {
+	// Use provided chunk buffer if available, otherwise allocate.
+	if chunk == nil {
+		chunk = make([]byte, 4096)
+	}
+
+	// Read in chunks to reuse buffer and enforce limit.
+	for {
+		n, readErr := r.Read(chunk)
+		if n > 0 {
+			if len(buf)+n > maxDecompressedBytes {
+				return nil, false, 0, ErrPayloadTooLarge
+			}
+			buf = append(buf, chunk[:n]...)
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return nil, false, 0, readErr
+		}
+	}
+
+	if len(buf)%2 != 0 {
 		return nil, false, 0, ErrInvalidFrameData
 	}
 
-	samples = make([]int16, len(raw)/2)
-	for i := range samples {
-		samples[i] = int16(binary.LittleEndian.Uint16(raw[i*2:]))
-	}
-	return samples, stereo, config, nil
+	return buf, stereo, config, nil
 }
