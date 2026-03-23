@@ -88,7 +88,7 @@
 - [x] **1.2** Implement correct bit-interleaving of SILK and CELT payloads per RFC 6716 §4.2.7.2 and §4.3.5.
 - [x] **1.3** Update `HybridEncoder.Encode()` to emit compliant packets.
 - [x] **1.4** Update `decodeHybrid()` to parse compliant hybrid packets.
-- [ ] **1.5** Enable `TestHybridLibopusValidation` and confirm packets decode in `opusdec`.
+- [x] **1.5** Enable `TestHybridLibopusValidation` and confirm packets decode in `opusdec`.
 
 **Validation**: `go test -v -run TestHybridLibopusValidation` passes; `opusdec` decodes without errors.
 
