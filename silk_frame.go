@@ -139,44 +139,19 @@ func (enc *SILKFrameEncoder) EncodeFrame(samples []float64) (*SILKEncodedFrame, 
 	}
 
 	enc.frameCount++
-
-	// Initialize range encoder for bitstream
 	rc := NewRangeEncoder()
 
 	// Step 1: Voice Activity Detection
 	vadResult := enc.vad.Detect(samples)
 	isVoiced := vadResult.Active && vadResult.Confidence > 0.3
-
-	// Encode VAD flag (1 bit)
 	vadFlag := 0
 	if isVoiced {
 		vadFlag = 1
 	}
 	rc.EncodeLogP(vadFlag, 1)
 
-	// Step 2: Check for LBRR and encode if present
-	hasLBRR := false
-	if enc.lbrrEncoder.IsEnabled() {
-		lbrr := enc.lbrrEncoder.EncodeLBRR()
-		if lbrr != nil && lbrr.Valid {
-			hasLBRR = true
-			// Encode LBRR flag (1 bit)
-			rc.EncodeLogP(1, 1)
-			// Encode LBRR data length (8 bits, max 255 bytes)
-			lbrrLen := len(lbrr.Data)
-			if lbrrLen > 255 {
-				lbrrLen = 255
-			}
-			rc.EncodeBits(uint32(lbrrLen), 8)
-			// Copy LBRR data
-			for _, b := range lbrr.Data[:lbrrLen] {
-				rc.EncodeBits(uint32(b), 8)
-			}
-		} else {
-			// No LBRR data
-			rc.EncodeLogP(0, 1)
-		}
-	}
+	// Step 2: LBRR encoding
+	hasLBRR := enc.encodeLBRR(rc)
 
 	// Step 3: LPC Analysis
 	lpcResult := enc.lpcAnalyzer.Analyze(samples)
@@ -187,132 +162,64 @@ func (enc *SILKFrameEncoder) EncodeFrame(samples []float64) (*SILKEncodedFrame, 
 	// Step 4: Convert LPC to NLSF and quantize
 	nlsfValues := LPCToNLSF(lpcResult.Coefficients)
 	quantIndices, quantNLSF := enc.nlsfQuantizer.Quantize(nlsfValues, SILKNLSFBits)
+	enc.encodeNLSF(rc, quantIndices)
 
-	// Encode quantized NLSF indices
-	for _, idx := range quantIndices {
-		// Use 6 bits per coefficient (range 0-63)
-		val := idx
-		if val < 0 {
-			val = 0
-		}
-		if val > 63 {
-			val = 63
-		}
-		rc.EncodeBits(uint32(val), SILKNLSFBits)
-	}
+	// Step 5: Pitch estimation and encoding (voiced frames only)
+	pitchLags := enc.processPitch(rc, samples, isVoiced, lpcResult.Coefficients)
 
-	// Step 5: Pitch estimation (for voiced frames)
-	var pitchLags []int
-
-	if isVoiced {
-		pitchResult := enc.pitchEstimate.Estimate(samples)
-		if pitchResult != nil && len(pitchResult.SubframeLags) > 0 {
-			pitchLags = pitchResult.SubframeLags
-		} else {
-			// Fallback if pitch estimation fails
-			pitchLags = make([]int, SILKSubFrames)
-			midLag := (SILKMinPitchLag + SILKMaxPitchLag) / 2
-			for i := range pitchLags {
-				pitchLags[i] = midLag
-			}
-		}
-
-		// Encode pitch lags
-		// First lag: absolute (9 bits, range 0-511)
-		firstLag := pitchLags[0]
-		if firstLag < SILKMinPitchLag {
-			firstLag = SILKMinPitchLag
-		}
-		if firstLag > SILKMaxPitchLag {
-			firstLag = SILKMaxPitchLag
-		}
-		rc.EncodeBits(uint32(firstLag-SILKMinPitchLag), 9)
-
-		// Subsequent lags: delta coded (4 bits signed, range -8 to +7)
-		for i := 1; i < len(pitchLags); i++ {
-			delta := pitchLags[i] - pitchLags[i-1]
-			if delta < -8 {
-				delta = -8
-			}
-			if delta > 7 {
-				delta = 7
-			}
-			rc.EncodeBits(uint32(delta+8), 4) // Offset to positive range
-		}
-
-		// Step 6: LTP Analysis
-		residual := computeLPCResidual(samples, lpcResult.Coefficients)
-		ltpResult := enc.ltpAnalyzer.Analyze(residual)
-
-		// Encode LTP codebook indices
-		if ltpResult != nil {
-			for _, sf := range ltpResult.Subframes {
-				if sf != nil {
-					// Encode codebook index (3 bits, 0-7)
-					rc.EncodeBits(uint32(sf.CodebookIndex&0x7), 3)
-				}
-			}
-		}
-	} else {
-		// Unvoiced: use zero pitch lags
-		pitchLags = make([]int, SILKSubFrames)
-	}
-
-	// Step 7: Subframe gain coding
+	// Step 6: Gain coding
 	residual := computeLPCResidual(samples, lpcResult.Coefficients)
 	subframeLen := enc.config.FrameSize / SILKSubFrames
-
 	frameGains := enc.gainCoder.ComputeGains(residual, subframeLen)
+	enc.encodeGains(rc, frameGains)
 
-	// Encode gains
-	for i := 0; i < GainNumSubframes; i++ {
-		// Encode gain index (6 bits, range 0-63)
-		idx := frameGains.Subframes[i].QuantIndex
-		if idx < 0 {
-			idx = 0
-		}
-		if idx > 63 {
-			idx = 63
-		}
-		rc.EncodeBits(uint32(idx), 6)
-	}
-
-	// Step 8: Excitation coding (LPC residual)
+	// Step 7: Excitation coding
 	excFrame := enc.excEncoder.Encode(residual, SILKMaxPulsesHint)
 	enc.encodeExcitation(rc, excFrame)
 
-	// Step 9: Update state for next frame
-	copy(enc.prevNLSF, quantNLSF)
-	for i := 0; i < GainNumSubframes; i++ {
-		enc.prevGains[i] = frameGains.Subframes[i].LogGain
-	}
-	copy(enc.prevPitchLags, pitchLags)
-
-	// Store frame data for LBRR
-	if enc.lbrrEncoder.IsEnabled() {
-		quantGains := make([]float64, GainNumSubframes)
-		for i := 0; i < GainNumSubframes; i++ {
-			quantGains[i] = frameGains.Subframes[i].LinearGain
-		}
-		lbrrData := &LBRRFrameData{
-			LPCCoeffs: lpcResult.Coefficients,
-			Gains:     quantGains,
-			PitchLags: pitchLags,
-			VADFlag:   isVoiced,
-			Energy:    vadResult.EnergyDB,
-		}
-		enc.lbrrEncoder.StorePrimaryFrame(lbrrData)
-	}
-
-	// Finalize bitstream
-	data := rc.Bytes()
+	// Step 8: Update state and store LBRR data
+	enc.updateState(quantNLSF, frameGains, pitchLags)
+	enc.storeLBRRFrame(lpcResult.Coefficients, frameGains, pitchLags, isVoiced, vadResult.EnergyDB)
 
 	return &SILKEncodedFrame{
-		Data:     data,
-		Bits:     len(data) * 8,
+		Data:     rc.Bytes(),
+		Bits:     len(rc.Bytes()) * 8,
 		IsVoiced: isVoiced,
 		HasLBRR:  hasLBRR,
 	}, nil
+}
+
+// processPitch handles pitch estimation, LTP analysis, and encoding for voiced frames.
+func (enc *SILKFrameEncoder) processPitch(rc *RangeEncoder, samples []float64, isVoiced bool, lpcCoeffs []float64) []int {
+	if !isVoiced {
+		return make([]int, SILKSubFrames)
+	}
+
+	// Estimate pitch
+	pitchLags := enc.estimatePitchLags(samples)
+	enc.encodePitch(rc, pitchLags)
+
+	// LTP Analysis
+	residual := computeLPCResidual(samples, lpcCoeffs)
+	ltpResult := enc.ltpAnalyzer.Analyze(residual)
+	enc.encodeLTP(rc, ltpResult)
+
+	return pitchLags
+}
+
+// estimatePitchLags estimates pitch lags for the frame.
+func (enc *SILKFrameEncoder) estimatePitchLags(samples []float64) []int {
+	pitchResult := enc.pitchEstimate.Estimate(samples)
+	if pitchResult != nil && len(pitchResult.SubframeLags) > 0 {
+		return pitchResult.SubframeLags
+	}
+	// Fallback if pitch estimation fails
+	pitchLags := make([]int, SILKSubFrames)
+	midLag := (SILKMinPitchLag + SILKMaxPitchLag) / 2
+	for i := range pitchLags {
+		pitchLags[i] = midLag
+	}
+	return pitchLags
 }
 
 // computeLPCResidual computes the LPC residual (prediction error).
@@ -414,6 +321,127 @@ func (enc *SILKFrameEncoder) Reset() {
 	}
 	enc.vad.Reset()
 	enc.lbrrEncoder.Reset()
+}
+
+// encodeLBRR encodes LBRR (Low Bit-Rate Redundancy) data if enabled.
+// Returns true if LBRR data was encoded.
+func (enc *SILKFrameEncoder) encodeLBRR(rc *RangeEncoder) bool {
+	if !enc.lbrrEncoder.IsEnabled() {
+		return false
+	}
+
+	lbrr := enc.lbrrEncoder.EncodeLBRR()
+	if lbrr == nil || !lbrr.Valid {
+		rc.EncodeLogP(0, 1)
+		return false
+	}
+
+	// Encode LBRR flag
+	rc.EncodeLogP(1, 1)
+	// Encode LBRR data length (8 bits, max 255 bytes)
+	lbrrLen := len(lbrr.Data)
+	if lbrrLen > 255 {
+		lbrrLen = 255
+	}
+	rc.EncodeBits(uint32(lbrrLen), 8)
+	// Copy LBRR data
+	for _, b := range lbrr.Data[:lbrrLen] {
+		rc.EncodeBits(uint32(b), 8)
+	}
+	return true
+}
+
+// encodeNLSF encodes the quantized NLSF indices to the range coder.
+func (enc *SILKFrameEncoder) encodeNLSF(rc *RangeEncoder, quantIndices []int) {
+	for _, idx := range quantIndices {
+		val := idx
+		if val < 0 {
+			val = 0
+		}
+		if val > 63 {
+			val = 63
+		}
+		rc.EncodeBits(uint32(val), SILKNLSFBits)
+	}
+}
+
+// encodePitch encodes pitch lags for voiced frames.
+func (enc *SILKFrameEncoder) encodePitch(rc *RangeEncoder, pitchLags []int) {
+	// First lag: absolute (9 bits, range 0-511)
+	firstLag := pitchLags[0]
+	if firstLag < SILKMinPitchLag {
+		firstLag = SILKMinPitchLag
+	}
+	if firstLag > SILKMaxPitchLag {
+		firstLag = SILKMaxPitchLag
+	}
+	rc.EncodeBits(uint32(firstLag-SILKMinPitchLag), 9)
+
+	// Subsequent lags: delta coded (4 bits signed, range -8 to +7)
+	for i := 1; i < len(pitchLags); i++ {
+		delta := pitchLags[i] - pitchLags[i-1]
+		if delta < -8 {
+			delta = -8
+		}
+		if delta > 7 {
+			delta = 7
+		}
+		rc.EncodeBits(uint32(delta+8), 4)
+	}
+}
+
+// encodeLTP encodes LTP (Long-Term Prediction) codebook indices.
+func (enc *SILKFrameEncoder) encodeLTP(rc *RangeEncoder, ltpResult *LTPResult) {
+	if ltpResult == nil {
+		return
+	}
+	for _, sf := range ltpResult.Subframes {
+		if sf != nil {
+			rc.EncodeBits(uint32(sf.CodebookIndex&0x7), 3)
+		}
+	}
+}
+
+// encodeGains encodes subframe gain indices.
+func (enc *SILKFrameEncoder) encodeGains(rc *RangeEncoder, frameGains *GainResult) {
+	for i := 0; i < GainNumSubframes; i++ {
+		idx := frameGains.Subframes[i].QuantIndex
+		if idx < 0 {
+			idx = 0
+		}
+		if idx > 63 {
+			idx = 63
+		}
+		rc.EncodeBits(uint32(idx), 6)
+	}
+}
+
+// updateState updates encoder state for the next frame.
+func (enc *SILKFrameEncoder) updateState(quantNLSF []float64, frameGains *GainResult, pitchLags []int) {
+	copy(enc.prevNLSF, quantNLSF)
+	for i := 0; i < GainNumSubframes; i++ {
+		enc.prevGains[i] = frameGains.Subframes[i].LogGain
+	}
+	copy(enc.prevPitchLags, pitchLags)
+}
+
+// storeLBRRFrame stores frame data for LBRR encoding.
+func (enc *SILKFrameEncoder) storeLBRRFrame(lpcCoeffs []float64, frameGains *GainResult, pitchLags []int, isVoiced bool, energyDB float64) {
+	if !enc.lbrrEncoder.IsEnabled() {
+		return
+	}
+	quantGains := make([]float64, GainNumSubframes)
+	for i := 0; i < GainNumSubframes; i++ {
+		quantGains[i] = frameGains.Subframes[i].LinearGain
+	}
+	lbrrData := &LBRRFrameData{
+		LPCCoeffs: lpcCoeffs,
+		Gains:     quantGains,
+		PitchLags: pitchLags,
+		VADFlag:   isVoiced,
+		Energy:    energyDB,
+	}
+	enc.lbrrEncoder.StorePrimaryFrame(lbrrData)
 }
 
 // SILKFrameDecoder decodes SILK frames following RFC 6716 §4.2.

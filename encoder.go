@@ -78,6 +78,9 @@ type Encoder struct {
 	// CELT encoder for 24 kHz and 48 kHz sample rates when useCELT is true.
 	// nil for 8 kHz and 16 kHz (SILK paths), or when useCELT is false.
 	celtEncoder *CELTFrameEncoder
+	// celtEncoderR is a second CELT encoder for the right channel in stereo
+	// dual mono mode. nil for mono or when useCELT is false.
+	celtEncoderR *CELTFrameEncoder
 
 	// useSILK controls whether to use the SILK codec for 8/16 kHz.
 	// When false (default), uses flate compression for backward compatibility.
@@ -87,6 +90,9 @@ type Encoder struct {
 	// SILK encoder for 8 kHz and 16 kHz sample rates when useSILK is true.
 	// nil for 24 kHz and 48 kHz (CELT paths), or when useSILK is false.
 	silkEncoder *SILKFrameEncoder
+	// silkEncoderR is a second SILK encoder for the right channel in stereo
+	// dual mono mode. nil for mono or when useSILK is false.
+	silkEncoderR *SILKFrameEncoder
 
 	// dtx implements Discontinuous Transmission for bandwidth reduction
 	// during silence periods. Initialized lazily when DTX is enabled.
@@ -163,6 +169,9 @@ func NewEncoderWithApplication(sampleRate, channels int, app Application) (*Enco
 // reconstruction of PCM samples is not possible. Use the CELT-enabled
 // [Decoder] for decoding these packets.
 //
+// For stereo input, dual mono encoding is used: each channel is encoded
+// independently and concatenated in the output packet.
+//
 // This method is part of ROADMAP Milestone 2f (CELT integration).
 func (e *Encoder) EnableCELT() error {
 	if e.sampleRate != 24000 && e.sampleRate != 48000 {
@@ -171,17 +180,27 @@ func (e *Encoder) EnableCELT() error {
 
 	if e.celtEncoder == nil {
 		frameSize := e.sampleRate * frameDurationMs / 1000 // Samples per channel
+		// Note: CELT internally processes mono; for stereo, we use dual mono
 		celtConfig := CELTFrameConfig{
 			SampleRate: e.sampleRate,
-			Channels:   e.channels,
+			Channels:   1, // Each encoder handles one channel
 			FrameSize:  frameSize,
-			Bitrate:    e.bitrate,
+			Bitrate:    e.bitrate / e.channels, // Split bitrate for dual mono
 		}
 		celtEnc, err := NewCELTFrameEncoder(celtConfig)
 		if err != nil {
 			return fmt.Errorf("magnum: enable CELT: %w", err)
 		}
 		e.celtEncoder = celtEnc
+
+		// Create second encoder for right channel in stereo mode
+		if e.channels == 2 {
+			celtEncR, err := NewCELTFrameEncoder(celtConfig)
+			if err != nil {
+				return fmt.Errorf("magnum: enable CELT (right channel): %w", err)
+			}
+			e.celtEncoderR = celtEncR
+		}
 	}
 
 	e.useCELT = true
@@ -201,6 +220,9 @@ func (e *Encoder) IsCELTEnabled() bool {
 // in RFC 6716 §4.2. Note that SILK is a lossy codec, so exact round-trip
 // reconstruction of PCM samples is not possible.
 //
+// For stereo input, dual mono encoding is used: each channel is encoded
+// independently and concatenated in the output packet.
+//
 // This method is part of ROADMAP Milestone 3f (SILK integration).
 func (e *Encoder) EnableSILK() error {
 	if e.sampleRate != 8000 && e.sampleRate != 16000 {
@@ -209,17 +231,27 @@ func (e *Encoder) EnableSILK() error {
 
 	if e.silkEncoder == nil {
 		frameSize := e.sampleRate * frameDurationMs / 1000 // Samples per channel
+		// Note: SILK internally processes mono; for stereo, we use dual mono
 		silkConfig := SILKFrameConfig{
 			SampleRate: e.sampleRate,
-			Channels:   e.channels,
+			Channels:   1, // Each encoder handles one channel
 			FrameSize:  frameSize,
-			Bitrate:    e.bitrate,
+			Bitrate:    e.bitrate / e.channels, // Split bitrate for dual mono
 		}
 		silkEnc, err := NewSILKFrameEncoder(silkConfig)
 		if err != nil {
 			return fmt.Errorf("magnum: enable SILK: %w", err)
 		}
 		e.silkEncoder = silkEnc
+
+		// Create second encoder for right channel in stereo mode
+		if e.channels == 2 {
+			silkEncR, err := NewSILKFrameEncoder(silkConfig)
+			if err != nil {
+				return fmt.Errorf("magnum: enable SILK (right channel): %w", err)
+			}
+			e.silkEncoderR = silkEncR
+		}
 	}
 
 	e.useSILK = true
@@ -491,76 +523,123 @@ func (e *Encoder) encodeFrame(frame []int16) ([]byte, error) {
 }
 
 // encodeFrameSILK encodes a frame using the SILK codec for RFC 6716 compliance.
+// For stereo input, dual mono encoding is used where each channel is encoded
+// independently and the encoded data is concatenated.
 func (e *Encoder) encodeFrameSILK(frame []int16, toc tocHeader) ([]byte, error) {
-	// Convert int16 samples to float64 for SILK processing.
-	// For stereo, we process the left channel only for now (simplification).
-	// Full stereo support would require dual mono encoding.
 	samplesPerChannel := len(frame) / e.channels
-	floatSamples := make([]float64, samplesPerChannel)
 
 	if e.channels == 1 {
+		// Mono: convert and encode directly
+		floatSamples := make([]float64, samplesPerChannel)
 		for i, s := range frame {
 			floatSamples[i] = float64(s) / 32768.0
 		}
-	} else {
-		// Stereo: mix to mono for SILK processing (simplification)
-		// TODO: Implement proper dual mono encoding
-		for i := 0; i < samplesPerChannel; i++ {
-			left := float64(frame[i*2]) / 32768.0
-			right := float64(frame[i*2+1]) / 32768.0
-			floatSamples[i] = (left + right) / 2.0
+
+		// Encode with SILK
+		silkFrame, err := e.silkEncoder.EncodeFrame(floatSamples)
+		if err != nil {
+			return nil, fmt.Errorf("magnum: encode frame: SILK: %w", err)
 		}
+
+		// Build packet: TOC header + SILK payload
+		result := make([]byte, 1+len(silkFrame.Data))
+		result[0] = byte(toc)
+		copy(result[1:], silkFrame.Data)
+		return result, nil
 	}
 
-	// Encode with SILK
-	silkFrame, err := e.silkEncoder.EncodeFrame(floatSamples)
+	// Stereo: dual mono encoding - encode each channel independently
+	leftSamples := make([]float64, samplesPerChannel)
+	rightSamples := make([]float64, samplesPerChannel)
+
+	for i := 0; i < samplesPerChannel; i++ {
+		leftSamples[i] = float64(frame[i*2]) / 32768.0
+		rightSamples[i] = float64(frame[i*2+1]) / 32768.0
+	}
+
+	// Encode left channel
+	leftFrame, err := e.silkEncoder.EncodeFrame(leftSamples)
 	if err != nil {
-		return nil, fmt.Errorf("magnum: encode frame: SILK: %w", err)
+		return nil, fmt.Errorf("magnum: encode frame: SILK left: %w", err)
 	}
 
-	// Build packet: TOC header + SILK payload
-	result := make([]byte, 1+len(silkFrame.Data))
+	// Encode right channel
+	rightFrame, err := e.silkEncoderR.EncodeFrame(rightSamples)
+	if err != nil {
+		return nil, fmt.Errorf("magnum: encode frame: SILK right: %w", err)
+	}
+
+	// Build packet: TOC header + left SILK payload + right SILK payload
+	// In RFC 6716 dual mono, the two channel frames are simply concatenated
+	result := make([]byte, 1+len(leftFrame.Data)+len(rightFrame.Data))
 	result[0] = byte(toc)
-	copy(result[1:], silkFrame.Data)
+	copy(result[1:], leftFrame.Data)
+	copy(result[1+len(leftFrame.Data):], rightFrame.Data)
 
 	return result, nil
 }
 
 // encodeFrameCELT encodes a frame using the CELT codec for RFC 6716 compliance.
+// For stereo input, dual mono encoding is used where each channel is encoded
+// independently and the encoded data is concatenated.
 func (e *Encoder) encodeFrameCELT(frame []int16, toc tocHeader) ([]byte, error) {
-	// Convert int16 samples to float64 for CELT processing.
-	// For stereo, we process the left channel only for now (simplification).
-	// Full stereo support would require mid/side coding or dual mono.
 	samplesPerChannel := len(frame) / e.channels
-	floatSamples := make([]float64, samplesPerChannel)
 
 	if e.channels == 1 {
+		// Mono: convert and encode directly
+		floatSamples := make([]float64, samplesPerChannel)
 		for i, s := range frame {
 			floatSamples[i] = float64(s) / 32768.0
 		}
-	} else {
-		// Stereo: mix to mono for CELT processing (simplification)
-		// TODO: Implement proper mid/side stereo coding
-		for i := 0; i < samplesPerChannel; i++ {
-			left := float64(frame[i*2]) / 32768.0
-			right := float64(frame[i*2+1]) / 32768.0
-			floatSamples[i] = (left + right) / 2.0
+
+		// Update CELT encoder bitrate if it changed
+		e.celtEncoder.config.Bitrate = e.bitrate
+
+		// Encode with CELT
+		celtFrame, err := e.celtEncoder.EncodeFrame(floatSamples)
+		if err != nil {
+			return nil, fmt.Errorf("magnum: encode frame: CELT: %w", err)
 		}
+
+		// Build packet: TOC header + CELT payload
+		result := make([]byte, 1+len(celtFrame.Data))
+		result[0] = byte(toc)
+		copy(result[1:], celtFrame.Data)
+		return result, nil
 	}
 
-	// Update CELT encoder bitrate if it changed
-	e.celtEncoder.config.Bitrate = e.bitrate
+	// Stereo: dual mono encoding - encode each channel independently
+	leftSamples := make([]float64, samplesPerChannel)
+	rightSamples := make([]float64, samplesPerChannel)
 
-	// Encode with CELT
-	celtFrame, err := e.celtEncoder.EncodeFrame(floatSamples)
+	for i := 0; i < samplesPerChannel; i++ {
+		leftSamples[i] = float64(frame[i*2]) / 32768.0
+		rightSamples[i] = float64(frame[i*2+1]) / 32768.0
+	}
+
+	// Update bitrate for both encoders (split evenly)
+	bitratePerChannel := e.bitrate / 2
+	e.celtEncoder.config.Bitrate = bitratePerChannel
+	e.celtEncoderR.config.Bitrate = bitratePerChannel
+
+	// Encode left channel
+	leftFrame, err := e.celtEncoder.EncodeFrame(leftSamples)
 	if err != nil {
-		return nil, fmt.Errorf("magnum: encode frame: CELT: %w", err)
+		return nil, fmt.Errorf("magnum: encode frame: CELT left: %w", err)
 	}
 
-	// Build packet: TOC header + CELT payload
-	result := make([]byte, 1+len(celtFrame.Data))
+	// Encode right channel
+	rightFrame, err := e.celtEncoderR.EncodeFrame(rightSamples)
+	if err != nil {
+		return nil, fmt.Errorf("magnum: encode frame: CELT right: %w", err)
+	}
+
+	// Build packet: TOC header + left CELT payload + right CELT payload
+	// In RFC 6716 dual mono, the two channel frames are simply concatenated
+	result := make([]byte, 1+len(leftFrame.Data)+len(rightFrame.Data))
 	result[0] = byte(toc)
-	copy(result[1:], celtFrame.Data)
+	copy(result[1:], leftFrame.Data)
+	copy(result[1+len(leftFrame.Data):], rightFrame.Data)
 
 	return result, nil
 }

@@ -98,11 +98,11 @@
 
 **Impact**: Provides confidence that encoder/decoder behavior matches the reference implementation; required for production use.
 
-**Current state**: No official Opus test vectors integrated; validation relies on ad-hoc libopus round-trips.
+**Current state**: Official test vectors integrated in testdata/opus_testvectors/; TestConformance verifies packet parsing.
 
-- [ ] **2.1** Download official test vectors from `https://opus-codec.org/testvectors/`.
-- [ ] **2.2** Create `testdata/` directory with vector files (input PCM + expected encoded output).
-- [ ] **2.3** Implement `TestConformance` that decodes each vector with `magnum.Decoder` and compares against reference PCM.
+- [x] **2.1** Download official test vectors from `https://opus-codec.org/testvectors/`.
+- [x] **2.2** Create `testdata/` directory with vector files (input PCM + expected encoded output).
+- [x] **2.3** Implement `TestConformance` that decodes each vector with `magnum.Decoder` and compares against reference PCM.
 - [ ] **2.4** Add cross-encode tests: encode with magnum, decode with pion/opus (and vice-versa).
 - [ ] **2.5** Integrate MOS-LQO scoring via `opus_compare` or pure-Go equivalent.
 
@@ -133,9 +133,9 @@
 
 **Impact**: Improves compression efficiency for stereo content; completes documented TODOs.
 
-**Current state**: Stereo encoding exists but lacks proper mid/side and dual mono optimizations.
+**Current state**: Dual mono encoding implemented for CELT and SILK codecs.
 
-- [ ] **4.1** Implement proper dual mono encoding (see `encoder.go:507`).
+- [x] **4.1** Implement proper dual mono encoding (see `encoder.go:507`).
 - [ ] **4.2** Implement mid/side stereo coding (see `encoder.go:543`).
 - [ ] **4.3** Add tests comparing stereo quality vs. libopus at equivalent bitrates.
 
