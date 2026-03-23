@@ -90,8 +90,8 @@ func NewDecoder(sampleRate, channels int) (*Decoder, error) {
 //
 // This method follows the pion/opus Decoder.Decode signature pattern.
 func (d *Decoder) Decode(packet []byte, out []int16) (int, error) {
-	// Reuse the decoder's internal buffers for decompression.
-	raw, stereo, config, err := decodePayload(packet, d.rawBuffer, d.readChunk)
+	// Reuse the decoder's internal buffers and flate reader for decompression.
+	raw, stereo, config, err := decodePayloadWithReader(packet, d.rawBuffer, d.readChunk, d.flateR)
 	if err != nil {
 		return 0, err
 	}
@@ -143,8 +143,8 @@ func (d *Decoder) Decode(packet []byte, out []int16) (int, error) {
 // Like [Decoder.Decode], this method validates the packet's channel and sample
 // rate configuration against the decoder's settings.
 func (d *Decoder) DecodeAlloc(packet []byte) ([]int16, error) {
-	// Reuse the decoder's internal buffers for decompression.
-	raw, stereo, config, err := decodePayload(packet, d.rawBuffer, d.readChunk)
+	// Reuse the decoder's internal buffers and flate reader for decompression.
+	raw, stereo, config, err := decodePayloadWithReader(packet, d.rawBuffer, d.readChunk, d.flateR)
 	if err != nil {
 		return nil, err
 	}
@@ -232,6 +232,12 @@ func decodeInternal(packet []byte) (samples []int16, stereo bool, config Configu
 // If chunk is provided, it is used as the read buffer; otherwise a temporary one is allocated.
 // Returns the raw bytes slice (possibly a resliced buf), stereo flag, and config.
 func decodePayload(packet, buf, chunk []byte) (raw []byte, stereo bool, config Configuration, err error) {
+	return decodePayloadWithReader(packet, buf, chunk, nil)
+}
+
+// decodePayloadWithReader is like decodePayload but accepts a reusable flate reader.
+// If flateR is provided, it is reset and reused instead of creating a new one.
+func decodePayloadWithReader(packet, buf, chunk []byte, flateR io.ReadCloser) (raw []byte, stereo bool, config Configuration, err error) {
 	if len(packet) < 1 {
 		return nil, false, 0, ErrTooShortForTableOfContentsHeader
 	}
@@ -250,8 +256,22 @@ func decodePayload(packet, buf, chunk []byte) (raw []byte, stereo bool, config C
 	// Decompress the payload (everything after the TOC byte).
 	// Limit decompressed output to maxDecompressedBytes+1 so that zip-bomb
 	// payloads are caught without exhausting memory.
-	r := flate.NewReader(bytes.NewReader(packet[1:]))
-	defer r.Close()
+	var r io.ReadCloser
+	if flateR != nil {
+		// Reset the existing flate reader with new input.
+		if resetter, ok := flateR.(flate.Resetter); ok {
+			if err := resetter.Reset(bytes.NewReader(packet[1:]), nil); err != nil {
+				return nil, false, 0, err
+			}
+			r = flateR
+		} else {
+			r = flate.NewReader(bytes.NewReader(packet[1:]))
+			defer r.Close()
+		}
+	} else {
+		r = flate.NewReader(bytes.NewReader(packet[1:]))
+		defer r.Close()
+	}
 
 	// Use provided buffer if available, otherwise allocate.
 	if buf != nil {
