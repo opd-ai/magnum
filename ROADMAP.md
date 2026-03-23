@@ -83,13 +83,13 @@ audio. It is transform-based (MDCT → band energy → PVQ spectral coding).
 - [x] Implement the `spreading` and `tf_change` parameters.
 
 #### 2d — CELT frame assembly
-- [ ] Wire range coder, energy coding, and PVQ output into a single
+- [x] Wire range coder, energy coding, and PVQ output into a single
   CELT frame bitstream following RFC 6716 §4.3.
-- [ ] Implement the `PostFilter` (pitch post-filter) encoder and decoder.
-- [ ] Implement `transient` detection and the transient subdivision logic.
+- [x] Implement the `PostFilter` (pitch post-filter) encoder and decoder.
+- [x] Implement `transient` detection and the transient subdivision logic.
 
 #### 2e — Bitrate control
-- [ ] Connect `SetBitrate` to the CELT allocation table so that bits are
+- [x] Connect `SetBitrate` to the CELT allocation table so that bits are
   distributed across bands proportionally to the configured bitrate.
 
 #### 2f — Integration

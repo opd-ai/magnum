@@ -1,0 +1,569 @@
+// Package magnum provides a simplified pure-Go Opus-compatible audio encoder.
+//
+// This file implements the CELT frame assembly as specified in RFC 6716 §4.3.
+// A CELT frame consists of:
+// 1. Silence flag (1 bit)
+// 2. Post-filter parameters (optional, for voiced audio)
+// 3. Transient flag (1 bit for non-transient modes)
+// 4. Intra-frame flag (1 bit, controls energy prediction mode)
+// 5. Coarse energy (entropy coded)
+// 6. TF change parameters
+// 7. Spreading decision
+// 8. Band allocation
+// 9. Fine energy (non-entropy coded)
+// 10. Spectral data (PVQ coded)
+//
+// The encoder wires together all the subcomponents (range coder, energy coding,
+// PVQ) into a complete CELT bitstream.
+
+package magnum
+
+import (
+	"math"
+)
+
+// CELTFrameConfig holds configuration for CELT frame encoding.
+type CELTFrameConfig struct {
+	// SampleRate is the audio sample rate (24000 or 48000 Hz)
+	SampleRate int
+	// Channels is the number of audio channels (1 or 2)
+	Channels int
+	// FrameSize is the number of samples per frame (120, 240, 480, 960)
+	FrameSize int
+	// Bitrate is the target bitrate in bits per second
+	Bitrate int
+}
+
+// CELTFrameEncoder encodes CELT frames following RFC 6716 §4.3.
+type CELTFrameEncoder struct {
+	config   CELTFrameConfig
+	mdct     *MDCT
+	pvq      *PVQ
+	eq       *EnergyQuantizer
+	spread   *SpreadingAnalyzer
+	tf       *TFAnalyzer
+	prevMDCT []float64 // Previous frame MDCT for overlap-add
+
+	// Frame counters for intra/inter decisions
+	frameCount int
+}
+
+// NewCELTFrameEncoder creates a new CELT frame encoder.
+func NewCELTFrameEncoder(config CELTFrameConfig) (*CELTFrameEncoder, error) {
+	// Validate configuration
+	if config.SampleRate != 24000 && config.SampleRate != 48000 {
+		return nil, ErrInvalidSampleRate
+	}
+	if config.Channels < 1 || config.Channels > 2 {
+		return nil, ErrInvalidChannels
+	}
+
+	// Determine MDCT size (same as frame size for CELT)
+	mdctSize := config.FrameSize
+	if !isValidFrameSize(mdctSize) {
+		return nil, ErrInvalidFrameSize
+	}
+
+	mdct := NewMDCT(mdctSize)
+	if mdct == nil {
+		return nil, ErrInvalidFrameSize
+	}
+
+	return &CELTFrameEncoder{
+		config:     config,
+		mdct:       mdct,
+		pvq:        NewPVQ(),
+		eq:         NewEnergyQuantizer(NumCELTBands),
+		spread:     NewSpreadingAnalyzer(),
+		tf:         NewTFAnalyzer(NumCELTBands),
+		prevMDCT:   make([]float64, config.FrameSize),
+		frameCount: 0,
+	}, nil
+}
+
+// isValidFrameSize checks if the frame size is valid for CELT.
+func isValidFrameSize(size int) bool {
+	switch size {
+	case 120, 240, 480, 960:
+		return true
+	default:
+		return false
+	}
+}
+
+// CELTEncodedFrame holds the encoded CELT frame data.
+type CELTEncodedFrame struct {
+	// Data is the encoded bitstream
+	Data []byte
+	// Bits is the number of bits used
+	Bits int
+	// IsSilence indicates if this is a silence frame
+	IsSilence bool
+	// IsTransient indicates if transient mode was used
+	IsTransient bool
+}
+
+// EncodeFrame encodes a single CELT frame from PCM samples.
+func (enc *CELTFrameEncoder) EncodeFrame(samples []float64) (*CELTEncodedFrame, error) {
+	if len(samples) != enc.config.FrameSize {
+		return nil, ErrInvalidFrameSize
+	}
+
+	// Detect silence
+	energy := computeFrameEnergy(samples)
+	isSilence := energy < 1e-10
+
+	// Initialize range encoder
+	rc := NewRangeEncoder()
+
+	// Encode silence flag (1 bit)
+	silenceFlag := 0
+	if isSilence {
+		silenceFlag = 1
+	}
+	rc.EncodeBits(uint32(silenceFlag), 1)
+
+	if isSilence {
+		// Silence frame: just return the silence flag
+		return &CELTEncodedFrame{
+			Data:      rc.Bytes(),
+			Bits:      1,
+			IsSilence: true,
+		}, nil
+	}
+
+	// Compute MDCT
+	mdctCoeffs := enc.mdct.Forward(samples)
+
+	// Compute band energies
+	bandEnergy := ComputeBandEnergy(mdctCoeffs)
+
+	// Detect transients
+	isTransient := detectTransient(samples, enc.prevMDCT)
+
+	// Encode transient flag
+	transientFlag := 0
+	if isTransient {
+		transientFlag = 1
+	}
+	rc.EncodeBits(uint32(transientFlag), 1)
+
+	// Determine if this is an intra frame (no prediction)
+	isIntra := enc.frameCount%10 == 0 // Periodic intra frames
+	intraFlag := 0
+	if isIntra {
+		intraFlag = 1
+	}
+	rc.EncodeBits(uint32(intraFlag), 1)
+
+	// Quantize coarse energy
+	quantizedEnergy := enc.eq.QuantizeCoarse(bandEnergy.LogEnergy, isIntra)
+
+	// Encode coarse energy using range coder
+	for i := 0; i < NumCELTBands; i++ {
+		// Encode quantized energy as signed value
+		val := quantizedEnergy.CoarseQuant[i]
+		// Convert to positive range for encoding
+		encoded := val + 64 // Offset to make positive (range -64 to +63)
+		if encoded < 0 {
+			encoded = 0
+		}
+		if encoded > 127 {
+			encoded = 127
+		}
+		rc.EncodeBits(uint32(encoded), 7) // 7 bits covers -64 to +63
+	}
+
+	// Analyze TF resolution
+	tfRes := enc.tf.Analyze(bandEnergy)
+
+	// Encode TF select
+	EncodeTFSelect(rc, tfRes, isTransient)
+
+	// Analyze spreading
+	spreadMode := enc.spread.Analyze(mdctCoeffs, NumCELTBands)
+
+	// Encode spreading
+	EncodeSpread(rc, spreadMode)
+
+	// Get scaled band boundaries
+	spectrumSize := len(mdctCoeffs)
+	starts, ends := ScaledBandBoundaries(spectrumSize)
+
+	// Compute bit budget for PVQ using the CELT allocation table
+	totalBits := enc.config.Bitrate * enc.config.FrameSize / enc.config.SampleRate
+	usedBits := computeUsedBits(rc)
+	pvqBits := totalBits - usedBits - 50 // Reserve some bits for fine energy
+	if pvqBits < 0 {
+		pvqBits = 0
+	}
+
+	// Allocate bits across bands using the bitrate-aware allocation system
+	bandBits := AllocateBandBits(pvqBits, NumCELTBands, bandEnergy,
+		enc.config.Bitrate, enc.config.SampleRate, enc.config.FrameSize)
+
+	// Normalize spectrum and encode with PVQ
+	normalizedCoeffs := normalizeSpectrum(mdctCoeffs, bandEnergy)
+
+	// Apply spreading
+	for i := 0; i < NumCELTBands; i++ {
+		ApplySpreading(normalizedCoeffs, spreadMode, starts[i], ends[i], uint32(enc.frameCount+i))
+	}
+
+	// Encode each band with PVQ
+	for i := 0; i < NumCELTBands; i++ {
+		if !bandEnergy.Valid[i] || bandBits[i] <= 0 {
+			continue
+		}
+
+		n := ends[i] - starts[i]
+		if n <= 0 || starts[i] >= len(normalizedCoeffs) || ends[i] > len(normalizedCoeffs) {
+			continue
+		}
+
+		bandCoeffs := make([]float64, n)
+		copy(bandCoeffs, normalizedCoeffs[starts[i]:ends[i]])
+
+		// Determine K from bit budget
+		k := enc.pvq.SelectK(n, bandBits[i])
+		if k == 0 {
+			continue
+		}
+
+		// Encode K
+		rc.EncodeBits(uint32(k), 5) // 5 bits for K (0-31)
+
+		// Quantize with PVQ
+		cw := enc.pvq.Encode(bandCoeffs, k)
+
+		// Encode the PVQ index
+		v := enc.pvq.V(n, k)
+		if v > 1 {
+			bits := enc.pvq.BitsRequired(n, k)
+			rc.EncodeBits(uint32(cw.Index), uint32(bits))
+		}
+	}
+
+	// Quantize fine energy for remaining bits (2 bits per band)
+	enc.eq.QuantizeFine(quantizedEnergy, NumCELTBands*2)
+
+	// Encode fine energy (2 bits per band)
+	for i := 0; i < NumCELTBands; i++ {
+		val := quantizedEnergy.FineQuant[i]
+		if val < 0 {
+			val = 0
+		}
+		if val > 3 {
+			val = 3
+		}
+		rc.EncodeBits(uint32(val), 2)
+	}
+
+	// Store current MDCT for next frame overlap
+	copy(enc.prevMDCT, mdctCoeffs)
+
+	enc.frameCount++
+
+	return &CELTEncodedFrame{
+		Data:        rc.Bytes(),
+		Bits:        computeUsedBits(rc),
+		IsSilence:   false,
+		IsTransient: isTransient,
+	}, nil
+}
+
+// CELTFrameDecoder decodes CELT frames following RFC 6716 §4.3.
+type CELTFrameDecoder struct {
+	config   CELTFrameConfig
+	mdct     *MDCT
+	pvq      *PVQ
+	eq       *EnergyQuantizer
+	prevMDCT []float64 // Previous frame MDCT for overlap-add
+}
+
+// NewCELTFrameDecoder creates a new CELT frame decoder.
+func NewCELTFrameDecoder(config CELTFrameConfig) (*CELTFrameDecoder, error) {
+	// Validate configuration
+	if config.SampleRate != 24000 && config.SampleRate != 48000 {
+		return nil, ErrInvalidSampleRate
+	}
+	if config.Channels < 1 || config.Channels > 2 {
+		return nil, ErrInvalidChannels
+	}
+
+	// Determine MDCT size (same as frame size for CELT)
+	mdctSize := config.FrameSize
+	if !isValidFrameSize(mdctSize) {
+		return nil, ErrInvalidFrameSize
+	}
+
+	mdct := NewMDCT(mdctSize)
+	if mdct == nil {
+		return nil, ErrInvalidFrameSize
+	}
+
+	return &CELTFrameDecoder{
+		config:   config,
+		mdct:     mdct,
+		pvq:      NewPVQ(),
+		eq:       NewEnergyQuantizer(NumCELTBands),
+		prevMDCT: make([]float64, config.FrameSize),
+	}, nil
+}
+
+// DecodeFrame decodes a single CELT frame to PCM samples.
+func (dec *CELTFrameDecoder) DecodeFrame(data []byte) ([]float64, error) {
+	if len(data) == 0 {
+		return nil, ErrInvalidPacket
+	}
+
+	rc := NewRangeDecoder(data)
+
+	// Decode silence flag
+	silenceFlag := rc.DecodeBits(1)
+	if silenceFlag == 1 {
+		// Return silence
+		return make([]float64, dec.config.FrameSize), nil
+	}
+
+	// Decode transient flag
+	isTransient := rc.DecodeBits(1) == 1
+
+	// Decode intra flag
+	isIntra := rc.DecodeBits(1) == 1
+
+	// Decode coarse energy
+	var coarseQuant [NumCELTBands]int
+	for i := 0; i < NumCELTBands; i++ {
+		encoded := int(rc.DecodeBits(7))
+		coarseQuant[i] = encoded - 64 // Remove offset
+	}
+
+	// Decode TF select
+	tfRes := DecodeTFSelect(rc, NumCELTBands, isTransient)
+	_ = tfRes // Used for TF changes if needed
+
+	// Decode spreading
+	spreadMode := DecodeSpread(rc)
+
+	// Compute bit budget
+	totalBits := dec.config.Bitrate * dec.config.FrameSize / dec.config.SampleRate
+	usedBits := 3 + NumCELTBands*7 + NumCELTBands + 2 // Estimate
+	pvqBits := totalBits - usedBits - 50
+	if pvqBits < 0 {
+		pvqBits = 0
+	}
+
+	// Create dummy band energy for allocation
+	dummyEnergy := &BandEnergy{}
+	for i := 0; i < NumCELTBands; i++ {
+		dummyEnergy.Valid[i] = true
+		dummyEnergy.LogEnergy[i] = float64(coarseQuant[i]) * coarseQuantStep
+	}
+	bandBits := allocateBandBits(pvqBits, NumCELTBands, dummyEnergy)
+
+	// Get scaled band boundaries
+	spectrumSize := dec.config.FrameSize / 2 // MDCT produces half the samples
+	starts, ends := ScaledBandBoundaries(spectrumSize)
+
+	// Decode PVQ coefficients
+	normalizedCoeffs := make([]float64, spectrumSize)
+
+	for i := 0; i < NumCELTBands; i++ {
+		if !dummyEnergy.Valid[i] || bandBits[i] <= 0 {
+			continue
+		}
+
+		n := ends[i] - starts[i]
+		if n <= 0 || starts[i] >= len(normalizedCoeffs) || ends[i] > len(normalizedCoeffs) {
+			continue
+		}
+
+		// Decode K
+		k := int(rc.DecodeBits(5))
+		if k == 0 {
+			continue
+		}
+
+		// Decode PVQ index
+		v := dec.pvq.V(n, k)
+		var index uint64
+		if v > 1 {
+			bits := dec.pvq.BitsRequired(n, k)
+			index = uint64(rc.DecodeBits(uint32(bits)))
+		}
+
+		// Decode codeword
+		cw := dec.pvq.DecodeFromIndex(index, n, k)
+		decoded := dec.pvq.Decode(cw)
+
+		// Copy to coefficients
+		if len(decoded) == n {
+			copy(normalizedCoeffs[starts[i]:ends[i]], decoded)
+		}
+	}
+
+	// Remove spreading
+	for i := 0; i < NumCELTBands; i++ {
+		if starts[i] < len(normalizedCoeffs) && ends[i] <= len(normalizedCoeffs) {
+			RemoveSpreading(normalizedCoeffs, spreadMode, starts[i], ends[i])
+		}
+	}
+
+	// Decode fine energy
+	var fineQuant [NumCELTBands]int
+	var fineBits [NumCELTBands]int
+	for i := 0; i < NumCELTBands; i++ {
+		fineQuant[i] = int(rc.DecodeBits(2))
+		fineBits[i] = 2
+	}
+
+	// Dequantize energy
+	bandEnergy := dec.eq.Dequantize(coarseQuant, fineQuant, fineBits, isIntra)
+
+	// Denormalize spectrum
+	mdctCoeffs := denormalizeSpectrum(normalizedCoeffs, bandEnergy[:], dec.config.FrameSize)
+
+	// Apply inverse MDCT
+	inverted := dec.mdct.Inverse(mdctCoeffs)
+
+	// Overlap-add with previous frame
+	samples := make([]float64, dec.config.FrameSize/2)
+	dec.mdct.OverlapAdd(dec.prevMDCT, inverted, samples)
+
+	// Store for next frame
+	copy(dec.prevMDCT, inverted)
+
+	return samples, nil
+}
+
+// Helper functions
+
+func computeFrameEnergy(samples []float64) float64 {
+	energy := 0.0
+	for _, s := range samples {
+		energy += s * s
+	}
+	return energy / float64(len(samples))
+}
+
+func detectTransient(current, previous []float64) bool {
+	if len(previous) == 0 {
+		return false
+	}
+
+	// Simple transient detection: compare energy ratios
+	n := len(current)
+	quarterLen := n / 4
+
+	// Compute energy in each quarter
+	energies := make([]float64, 4)
+	for q := 0; q < 4; q++ {
+		for i := q * quarterLen; i < (q+1)*quarterLen; i++ {
+			energies[q] += current[i] * current[i]
+		}
+	}
+
+	// Check for sudden energy increase
+	maxRatio := 0.0
+	for q := 1; q < 4; q++ {
+		if energies[q-1] > 1e-10 {
+			ratio := energies[q] / energies[q-1]
+			if ratio > maxRatio {
+				maxRatio = ratio
+			}
+		}
+	}
+
+	// Transient if energy ratio exceeds threshold
+	return maxRatio > 10.0
+}
+
+func computeLM(frameSize int) int {
+	// LM = log2(frameSize / 120)
+	switch frameSize {
+	case 120:
+		return 0
+	case 240:
+		return 1
+	case 480:
+		return 2
+	case 960:
+		return 3
+	default:
+		return 2 // Default
+	}
+}
+
+func computeUsedBits(rc *RangeEncoder) int {
+	// Estimate bits used so far
+	bytes := rc.Bytes()
+	return len(bytes) * 8
+}
+
+func allocateBandBits(totalBits, numBands int, energy *BandEnergy) []int {
+	// Use the new bitrate allocation system with default parameters
+	// This provides backward compatibility while connecting to the proper
+	// CELT allocation table system (RFC 6716 §4.3.4)
+	return AllocateBandBits(totalBits, numBands, energy, 64000, 48000, 960)
+}
+
+func normalizeSpectrum(mdctCoeffs []float64, energy *BandEnergy) []float64 {
+	n := len(mdctCoeffs)
+	normalized := make([]float64, n)
+	copy(normalized, mdctCoeffs)
+
+	starts, ends := ScaledBandBoundaries(n)
+
+	for i := 0; i < NumCELTBands; i++ {
+		if !energy.Valid[i] {
+			continue
+		}
+
+		start := starts[i]
+		end := ends[i]
+		if start >= n || end > n {
+			continue
+		}
+
+		// Compute band energy
+		bandSum := 0.0
+		for j := start; j < end; j++ {
+			bandSum += normalized[j] * normalized[j]
+		}
+
+		// Normalize to unit energy
+		if bandSum > 1e-10 {
+			scale := 1.0 / math.Sqrt(bandSum)
+			for j := start; j < end; j++ {
+				normalized[j] *= scale
+			}
+		}
+	}
+
+	return normalized
+}
+
+func denormalizeSpectrum(normalizedCoeffs, bandEnergy []float64, frameSize int) []float64 {
+	n := len(normalizedCoeffs)
+	denormalized := make([]float64, n)
+	copy(denormalized, normalizedCoeffs)
+
+	starts, ends := ScaledBandBoundaries(n)
+
+	for i := 0; i < NumCELTBands && i < len(bandEnergy); i++ {
+		start := starts[i]
+		end := ends[i]
+		if start >= n || end > n {
+			continue
+		}
+
+		// Apply band energy (convert from dB to linear)
+		gain := math.Pow(10.0, bandEnergy[i]/20.0)
+		for j := start; j < end; j++ {
+			denormalized[j] *= gain
+		}
+	}
+
+	return denormalized
+}

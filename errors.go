@@ -37,4 +37,17 @@ var (
 	// configuration indicates a sample rate that does not match the decoder's
 	// configured sample rate.
 	ErrSampleRateMismatch = errors.New("packet sample rate configuration does not match decoder")
+
+	// ErrInvalidSampleRate is returned when the sample rate is not valid for CELT
+	// encoding (must be 24000 or 48000 Hz).
+	ErrInvalidSampleRate = errors.New("invalid sample rate for CELT: must be 24000 or 48000")
+
+	// ErrInvalidChannels is returned when the channel count is invalid.
+	ErrInvalidChannels = errors.New("invalid channel count: must be 1 or 2")
+
+	// ErrInvalidFrameSize is returned when the frame size is not supported.
+	ErrInvalidFrameSize = errors.New("invalid frame size: must be 120, 240, 480, or 960")
+
+	// ErrInvalidPacket is returned when a packet is malformed.
+	ErrInvalidPacket = errors.New("invalid or malformed packet")
 )
