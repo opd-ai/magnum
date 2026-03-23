@@ -162,10 +162,10 @@
 
 **Impact**: Quantifies production readiness; required for comparison with libopus.
 
-**Current state**: No benchmarks exist.
+**Current state**: Benchmarks added for all codec paths.
 
-- [ ] **6.1** Add `BenchmarkEncode` for each codec path (SILK 8k, SILK 16k, CELT 24k, CELT 48k, Hybrid).
-- [ ] **6.2** Add `BenchmarkDecode` for each path.
+- [x] **6.1** Add `BenchmarkEncode` for each codec path (SILK 8k, SILK 16k, CELT 24k, CELT 48k, Hybrid).
+- [x] **6.2** Add `BenchmarkDecode` for each path.
 - [ ] **6.3** Profile and optimize hot paths (MDCT, PVQ) targeting ≤3× libopus throughput.
 - [ ] **6.4** Document benchmark results in README.
 

@@ -612,6 +612,82 @@ func TestFrameBufferUnboundedDefault(t *testing.T) {
 	}
 }
 
+// =====================================================================
+// Benchmarks for all codec paths (ROADMAP Priority 6)
+// =====================================================================
+
+// BenchmarkEncode8kMono measures SILK encoding performance for 8 kHz mono audio.
+func BenchmarkEncode8kMono(b *testing.B) {
+	enc, err := NewEncoder(8000, 1)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	// 20 ms frame at 8 kHz mono = 160 samples
+	pcm := make([]int16, 160)
+	for i := range pcm {
+		pcm[i] = int16(i % 1000)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := enc.Encode(pcm)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkEncode16kMono measures SILK encoding performance for 16 kHz mono audio.
+func BenchmarkEncode16kMono(b *testing.B) {
+	enc, err := NewEncoder(16000, 1)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	// 20 ms frame at 16 kHz mono = 320 samples
+	pcm := make([]int16, 320)
+	for i := range pcm {
+		pcm[i] = int16(i % 1000)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := enc.Encode(pcm)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkEncode24kMono measures CELT encoding performance for 24 kHz mono audio.
+func BenchmarkEncode24kMono(b *testing.B) {
+	enc, err := NewEncoder(24000, 1)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if err := enc.EnableCELT(); err != nil {
+		b.Fatal(err)
+	}
+
+	// 20 ms frame at 24 kHz mono = 480 samples
+	pcm := make([]int16, 480)
+	for i := range pcm {
+		pcm[i] = int16(i % 1000)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := enc.Encode(pcm)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // BenchmarkEncode48kMono measures encoding performance for 48 kHz mono audio.
 func BenchmarkEncode48kMono(b *testing.B) {
 	enc, err := NewEncoder(48000, 1)
@@ -712,6 +788,176 @@ func BenchmarkDecoderDecode(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_, err := dec.Decode(packet, out)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkDecode8kMono measures SILK decoding performance for 8 kHz mono audio.
+func BenchmarkDecode8kMono(b *testing.B) {
+	enc, err := NewEncoder(8000, 1)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	pcm := make([]int16, 160)
+	for i := range pcm {
+		pcm[i] = int16(i % 1000)
+	}
+	packet, err := enc.Encode(pcm)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	dec, err := NewDecoder(8000, 1)
+	if err != nil {
+		b.Fatal(err)
+	}
+	out := make([]int16, 160)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := dec.Decode(packet, out)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkDecode16kMono measures SILK decoding performance for 16 kHz mono audio.
+func BenchmarkDecode16kMono(b *testing.B) {
+	enc, err := NewEncoder(16000, 1)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	pcm := make([]int16, 320)
+	for i := range pcm {
+		pcm[i] = int16(i % 1000)
+	}
+	packet, err := enc.Encode(pcm)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	dec, err := NewDecoder(16000, 1)
+	if err != nil {
+		b.Fatal(err)
+	}
+	out := make([]int16, 320)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := dec.Decode(packet, out)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkDecode24kMono measures CELT decoding performance for 24 kHz mono audio.
+func BenchmarkDecode24kMono(b *testing.B) {
+	enc, err := NewEncoder(24000, 1)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if err := enc.EnableCELT(); err != nil {
+		b.Fatal(err)
+	}
+
+	pcm := make([]int16, 480)
+	for i := range pcm {
+		pcm[i] = int16(i % 1000)
+	}
+	packet, err := enc.Encode(pcm)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	dec, err := NewDecoder(24000, 1)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if err := dec.EnableCELT(); err != nil {
+		b.Fatal(err)
+	}
+	out := make([]int16, 480)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := dec.Decode(packet, out)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkHybridEncode measures hybrid (SILK+CELT) encoding performance for 24 kHz.
+func BenchmarkHybridEncode(b *testing.B) {
+	encConfig := HybridEncoderConfig{
+		SampleRate: 24000,
+		Channels:   1,
+		Bitrate:    64000,
+	}
+	enc, err := NewHybridEncoder(encConfig)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	// 20 ms frame at 24 kHz = 480 samples
+	samples := make([]float64, 480)
+	for i := range samples {
+		samples[i] = float64(i%1000) / 1000.0
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := enc.EncodeFrame(samples)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkHybridDecode measures hybrid (SILK+CELT) decoding performance for 24 kHz.
+func BenchmarkHybridDecode(b *testing.B) {
+	encConfig := HybridEncoderConfig{
+		SampleRate: 24000,
+		Channels:   1,
+		Bitrate:    64000,
+	}
+	enc, err := NewHybridEncoder(encConfig)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	samples := make([]float64, 480)
+	for i := range samples {
+		samples[i] = float64(i%1000) / 1000.0
+	}
+	frame, err := enc.EncodeFrame(samples)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	decConfig := HybridDecoderConfig{
+		SampleRate: 24000,
+		Channels:   1,
+	}
+	dec, err := NewHybridDecoder(decConfig)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := dec.DecodeFrameWithSILKLen(frame.Data, frame.SILKLen)
 		if err != nil {
 			b.Fatal(err)
 		}
