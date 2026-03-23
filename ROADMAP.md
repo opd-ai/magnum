@@ -73,7 +73,7 @@ audio. It is transform-based (MDCT → band energy → PVQ spectral coding).
 #### 2b — Band energy encoding
 - [x] Implement log-domain band energy computation across the 21 CELT
   frequency bands defined in RFC 6716 §4.3.2.
-- [ ] Implement the coarse and fine energy quantizers (`quant_coarse_energy`,
+- [x] Implement the coarse and fine energy quantizers (`quant_coarse_energy`,
   `quant_fine_energy`) and their decoders.
 
 #### 2c — PVQ spectral coding
