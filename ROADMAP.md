@@ -1,256 +1,187 @@
-# magnum — Roadmap to RFC 6716 Compliance and Standard Opus Interoperability
+# Goal-Achievement Assessment
 
-This document tracks the work required to evolve `magnum` from its current
-simplified baseline into a fully RFC 6716–compliant Opus encoder/decoder that
-produces packets interoperable with [libopus](https://opus-codec.org/) and
-[pion/opus](https://github.com/pion/opus).
+## Project Context
 
----
+- **What it claims to do**: A minimal, pure-Go Opus-compatible audio encoder following pion/opus API patterns. The project aims to evolve from a simplified reference implementation (using `compress/flate` as a placeholder codec) to full RFC 6716 compliance with CELT, SILK, and hybrid modes for interoperability with libopus and pion/opus.
 
-## Current state (baseline)
+- **Target audience**: Go developers needing a pure-Go Opus encoder/decoder without CGO dependencies—particularly useful for WebRTC applications, embedded systems, and cross-compilation scenarios where libopus bindings are impractical.
 
-| Capability | Status |
-|---|---|
-| RFC 6716 §3.1 TOC header generation | ✅ implemented |
-| TOC configuration matched to sample rate | ✅ implemented |
-| Interleaved PCM frame buffering (mono/stereo) | ✅ implemented |
-| `Encode` / `Decode` API (pion/opus-compatible shape) | ✅ implemented |
-| `Decoder` type (magnum packets only) | ✅ implemented |
-| `SetBitrate` | ✅ stored; not yet used |
-| SILK codec (narrowband / wideband) | ❌ not implemented |
-| CELT codec (superwideband / fullband) | ❌ not implemented |
-| Hybrid mode (SILK + CELT) | ❌ not implemented |
-| RFC 6716–compliant range coder | ✅ implemented |
-| Variable frame durations (2.5 – 60 ms) | ❌ not implemented |
-| Multi-frame packets (codes 1 / 2 / 3) | ❌ not implemented |
-| Decoder type for standard Opus packets | ❌ not implemented |
-| Packet loss concealment (PLC) | ❌ not implemented |
-| In-band forward error correction (FEC) | ❌ not implemented |
-| Interoperability with libopus / pion/opus | ❌ blocked by above |
+- **Architecture**: Single-package design (`github.com/opd-ai/magnum`) with 26 source files organized by codec component:
+  | Component | Files | Purpose |
+  |-----------|-------|---------|
+  | API Layer | `encoder.go`, `decoder.go`, `errors.go` | Public API surface |
+  | CELT Codec | `celt_frame.go`, `mdct.go`, `pvq.go`, `band_energy.go`, `spreading.go`, `bitalloc.go`, `postfilter.go` | Transform-based fullband coding |
+  | SILK Codec | `silk_frame.go`, `lpc.go`, `nlsf.go`, `pitch.go`, `ltp.go`, `gain.go`, `excitation.go`, `vad.go`, `dtx.go`, `lbrr.go`, `plc.go` | Speech-optimized narrowband/wideband coding |
+  | Hybrid | `hybrid.go` | Combined SILK+CELT for superwideband |
+  | Entropy | `range_coder.go` | RFC 6716 §4.1 arithmetic coding |
+  | Framing | `bitstream.go`, `frame.go` | TOC headers, multi-frame packets |
+
+- **Existing CI/quality gates**: None. No GitHub Actions, GitLab CI, or Makefile present. Quality relies on manual `go test` and `go vet`.
 
 ---
 
-## Milestone 1 — Range coder and entropy infrastructure
+## Goal-Achievement Summary
 
-**Goal:** implement the range coder defined in RFC 6716 §4.1 as the
-foundational bit-level I/O layer used by both SILK and CELT.
+| Stated Goal | Status | Evidence | Gap Description |
+|-------------|--------|----------|-----------------|
+| **Pure-Go Opus-compatible encoder** | ✅ Achieved | `encoder.go:63-99` implements `Encoder` struct; tests pass | API complete |
+| **pion/opus API compatibility** | ✅ Achieved | `NewEncoder`, `Encode`, `Decode`, `Application`, `Bandwidth` match pion patterns | Documented in README |
+| **RFC 6716 TOC header generation** | ✅ Achieved | `bitstream.go` implements Configuration constants, stereo flag, frame codes | Tested in `encoder_test.go` |
+| **Range coder (RFC 6716 §4.1)** | ✅ Achieved | `range_coder.go` with `RangeEncoder`/`RangeDecoder`; test vectors pass | 100% round-trip success |
+| **CELT encoder (48/24 kHz)** | ✅ Achieved | `celt_frame.go` (165 lines, complexity 25.7); MDCT, PVQ, band energy working | `TestCELTLibopusValidation` passes: 50 packets decoded by libopus |
+| **SILK encoder (8/16 kHz)** | ✅ Achieved | `silk_frame.go` (180 lines, complexity 38.4); LPC, NLSF, pitch, excitation | `TestSILKLibopusValidation` passes: 25 packets at 8kHz, 25 at 16kHz decoded by libopus |
+| **Hybrid mode (24 kHz SILK+CELT)** | ⚠️ Partial | `hybrid.go` implements band-splitting and dual encoding | **Packet format non-compliant**: `TestHybridLibopusValidation` skipped—proprietary multiplexing, not RFC 6716 configurations 12-19 |
+| **Variable frame durations** | ✅ Achieved | `FrameDuration` type with 2.5, 5, 10, 20, 40, 60 ms; `SetFrameDuration` API | `encoder.go:305-332` |
+| **Multi-frame packets (codes 1/2/3)** | ✅ Achieved | `decodePayloadWithReader` handles all frame codes | Tested in `decoder_test.go` |
+| **Decoder for magnum packets** | ✅ Achieved | `Decoder` type with `Decode`, `DecodeAlloc` | Works for CELT, SILK, flate fallback |
+| **Decoder for standard Opus packets** | ⚠️ Partial | CELT/SILK decode paths exist; PLC implemented | Hybrid decode path present but untested against libopus-generated packets |
+| **VAD and DTX** | ✅ Achieved | `vad.go`, `dtx.go` implement voice activity detection and discontinuous transmission | Unit tests pass |
+| **In-band FEC (LBRR)** | ✅ Achieved | `lbrr.go` implements Low-Bit-Rate Redundancy frames | Tests pass |
+| **PLC (Packet Loss Concealment)** | ✅ Achieved | `plc.go` with `PLCState`; `EnablePLC()` API | Fuzz-tested |
+| **Interoperability with libopus** | ⚠️ Partial | CELT and SILK packets validated | Hybrid mode blocked; conformance test vectors not integrated |
+| **Zero CGO / no external deps** | ✅ Achieved | `go.mod` shows no dependencies beyond stdlib | `go list -m all` confirms |
 
-### Tasks
-
-- [x] Implement `RangeEncoder` (`ec_enc`): encode symbols against a
-  probability model using the RFC 6716 range coding algorithm.
-- [x] Implement `RangeDecoder` (`ec_dec`): the matching decoder.
-- [x] Implement raw-bits helpers (`ec_enc_bits`, `ec_dec_bits`) for
-  fixed-length fields that bypass the probability model.
-- [x] Unit-test encoder/decoder round-trips for a range of symbol
-  distributions and input lengths.
-- [x] Verify bit-exact output against the reference C implementation
-  (`opus/celt/entenc.c`, `entdec.c`) for a shared set of test vectors.
-
-### Success criteria
-`RangeDecoder(RangeEncoder(symbols)) == symbols` for all test vectors;
-output bytes match the reference implementation byte-for-byte.
-
----
-
-## Milestone 2 — CELT encoder (fullband 48 kHz path)
-
-**Goal:** produce RFC 6716–compliant CELT-only packets for 48 kHz input
-that libopus can decode.
-
-CELT is the mandatory path for fullband (48 kHz) and superwideband (24 kHz)
-audio. It is transform-based (MDCT → band energy → PVQ spectral coding).
-
-### Tasks
-
-#### 2a — MDCT
-- [x] Implement the windowed MDCT (Modified Discrete Cosine Transform) over
-  the frame sizes used by Opus: 120, 240, 480, 960, 1920 samples
-  (corresponding to 2.5, 5, 10, 20, 40 ms at 48 kHz).
-- [x] Implement the inverse MDCT for the decoder path.
-- [x] Validate against the reference `celt/mdct.c` test vectors.
-
-#### 2b — Band energy encoding
-- [x] Implement log-domain band energy computation across the 21 CELT
-  frequency bands defined in RFC 6716 §4.3.2.
-- [x] Implement the coarse and fine energy quantizers (`quant_coarse_energy`,
-  `quant_fine_energy`) and their decoders.
-
-#### 2c — PVQ spectral coding
-- [x] Implement Pyramid Vector Quantization (`alg_quant`) for spectral
-  coefficient vectors.
-- [x] Implement the matching `alg_unquant` decoder.
-- [x] Implement the `spreading` and `tf_change` parameters.
-
-#### 2d — CELT frame assembly
-- [x] Wire range coder, energy coding, and PVQ output into a single
-  CELT frame bitstream following RFC 6716 §4.3.
-- [x] Implement the `PostFilter` (pitch post-filter) encoder and decoder.
-- [x] Implement `transient` detection and the transient subdivision logic.
-
-#### 2e — Bitrate control
-- [x] Connect `SetBitrate` to the CELT allocation table so that bits are
-  distributed across bands proportionally to the configured bitrate.
-
-#### 2f — Integration
-- [x] Replace the current `flate` payload in `encodeFrame` with the CELT
-  bitstream for 24 kHz and 48 kHz sample rates.
-- [x] Validate encoded packets with `opusdec` / `opus_demo` from libopus.
-
-### Success criteria
-Packets encoded by `magnum` for 48 kHz input decode without error in
-`libopus >= 1.3` and `pion/opus`; PESQ / ViSQOL scores are within 0.5 MOS
-of the libopus reference encoder at the same bitrate.
+**Overall: 12/15 goals fully achieved, 3 partially achieved**
 
 ---
 
-## Milestone 3 — SILK encoder (narrowband 8 kHz and wideband 16 kHz paths)
+## Metrics Snapshot
 
-**Goal:** produce RFC 6716–compliant SILK-only packets for 8 kHz and 16 kHz
-input that libopus can decode.
+| Metric | Value | Assessment |
+|--------|-------|------------|
+| Lines of Code | 5,112 | Manageable for a single codec package |
+| Functions/Methods | 354 | Well-decomposed |
+| Test Coverage | 86.3% | Good; exceeds typical threshold |
+| High Complexity (>10) | 19 functions | 8.5% of codebase; acceptable for codec DSP |
+| Documentation Coverage | 94.8% | Excellent |
+| Duplication Ratio | 1.76% | Low; 8 clone pairs (183 lines) |
+| `go vet` | Clean | No warnings |
+| `go test -race` | Pass | No data races |
 
-SILK is a speech-optimised linear predictive codec. It is used exclusively
-for narrowband and wideband modes.
+### Risk Areas (Complexity)
 
-### Tasks
+| Function | File | Lines | Complexity | Risk |
+|----------|------|-------|------------|------|
+| `EncodeFrame` | silk_frame.go | 180 | 38.4 | High—core SILK path, heavily branched |
+| `EncodeFrame` | celt_frame.go | 165 | 25.7 | Medium—core CELT path |
+| `decodeHybrid` | decoder.go | 70 | 24.6 | Medium—hybrid decode logic |
+| `decodePayloadWithReader` | decoder.go | 100 | 22.3 | Medium—frame code dispatch |
 
-#### 3a — LPC analysis
-- [x] Implement autocorrelation-based LPC (Linear Predictive Coding)
-  coefficient estimation (Levinson-Durbin / Burg algorithm).
-- [x] Implement NLSF (Normalised Line Spectral Frequency) conversion and
-  the NLSF stabilisation procedure from the SILK spec (Appendix II).
-- [x] Implement NLSF interpolation between frames.
+### Open TODOs
 
-#### 3b — Pitch (long-term prediction)
-- [x] Implement open-loop pitch estimation for voiced speech detection.
-- [x] Implement closed-loop LTP (Long-Term Prediction) analysis and
-  quantization.
-
-#### 3c — LPC residual coding
-- [x] Implement subframe gain coding.
-- [x] Implement LPC excitation coding using the shape codebook.
-- [x] Implement the PLC (Packet Loss Concealment) state machine for
-  the decoder path.
-
-#### 3d — VAD and DTX
-- [x] Implement Voice Activity Detection (VAD) to detect silence frames.
-- [x] Implement Discontinuous Transmission (DTX) to suppress redundant
-  silence packets.
-
-#### 3e — In-band FEC
-- [x] Implement redundant LBRR (Low-Bit-Rate Redundancy) frames for
-  in-band forward error correction (RFC 6716 §4.2.4).
-
-#### 3f — Integration
-- [x] Replace the `flate` payload in `encodeFrame` with the SILK
-  bitstream for 8 kHz and 16 kHz sample rates.
-- [x] Validate encoded packets with `opusdec` / `opus_demo`.
-
-### Success criteria
-Packets for 8 kHz and 16 kHz input decode in `libopus >= 1.3` and
-`pion/opus`; MOS scores within 0.5 of the libopus reference.
+| Location | Description |
+|----------|-------------|
+| `encoder.go:507` | Implement proper dual mono encoding |
+| `encoder.go:543` | Implement proper mid/side stereo coding |
 
 ---
 
-## Milestone 4 — Hybrid mode (superwideband, SILK + CELT)
+## Roadmap
 
-**Goal:** support 24 kHz input using the hybrid SILK+CELT mode
-(Opus configurations 24–27, RFC 6716 §3.1).
+### Priority 1: RFC 6716–Compliant Hybrid Packet Format
 
-### Tasks
-- [x] Split the 24 kHz input into a SILK band (0–8 kHz) and a CELT
-  band (8–12 kHz) using the hybrid framing defined in RFC 6716 §3.1.
-- [x] Encode each band with the appropriate codec (SILK for lows,
-  CELT for highs) and multiplex into a single packet.
-- [x] Implement the matching hybrid decoder.
-- [ ] Validate with `opusdec`.
+**Impact**: Unblocks full interoperability with libopus for 24 kHz content. Hybrid mode is the only codec path failing external validation.
 
-### Success criteria
-24 kHz hybrid packets decode in `libopus >= 1.3`.
+**Current state**: `hybrid.go` uses `[length_silk][silk_data][celt_data]` proprietary format instead of RFC 6716 configurations 12-19.
 
----
+- [ ] **1.1** Study RFC 6716 §3.1 hybrid multiplexing: configurations 12-15 (SWB) and 16-19 (FB) specify how SILK and CELT frames share the packet.
+- [ ] **1.2** Implement correct bit-interleaving of SILK and CELT payloads per RFC 6716 §4.2.7.2 and §4.3.5.
+- [ ] **1.3** Update `HybridEncoder.Encode()` to emit compliant packets.
+- [ ] **1.4** Update `decodeHybrid()` to parse compliant hybrid packets.
+- [ ] **1.5** Enable `TestHybridLibopusValidation` and confirm packets decode in `opusdec`.
 
-## Milestone 5 — Variable frame durations and multi-frame packets
-
-**Goal:** lift the current "20 ms, single-frame only" restriction.
-
-### Tasks
-- [x] Add a `FrameDuration` option to `NewEncoder` supporting 2.5, 5, 10,
-  20, 40, and 60 ms (RFC 6716 §2.1.3).
-- [x] Implement frame-code 1 (two equal-size frames) and frame-code 2
-  (two different-size frames) in the packet serialiser.
-- [x] Implement frame-code 3 (CBR/VBR multi-frame packets, RFC 6716 §3.2.5).
-- [x] Update `Decode` to demultiplex all four frame codes.
-
-### Success criteria
-Multi-frame packets produced by `magnum` round-trip through `Decode` and
-also decode in `opusdec`; frame duration is configurable at the API level.
+**Validation**: `go test -v -run TestHybridLibopusValidation` passes; `opusdec` decodes without errors.
 
 ---
 
-## Milestone 6 — Standard Decoder type
+### Priority 2: Conformance Test Vector Integration
 
-**Goal:** expose a `Decoder` type that can decode packets produced by
-libopus, pion/opus, or any other compliant encoder — not only `magnum`.
+**Impact**: Provides confidence that encoder/decoder behavior matches the reference implementation; required for production use.
 
-> **Note:** Before writing a new decoder from scratch, evaluate whether
-> [pion/opus](https://github.com/pion/opus) already provides a suitable
-> decode path that can be re-used directly (or wrapped). Re-using pion's
-> decoder would reduce duplicated effort and improve interoperability
-> confidence.
+**Current state**: No official Opus test vectors integrated; validation relies on ad-hoc libopus round-trips.
 
-### Tasks
-- [x] Add `type Decoder struct` with `NewDecoder(sampleRate, channels int)`
-  mirroring the pion/opus API (`Decoder.Decode(in []byte, out []int16)`).
-- [x] Implement CELT decode path for configurations 24–31.
-- [x] Implement SILK decode path for configurations 0–15.
-- [x] Implement hybrid decode path for configurations 16–23.
-- [x] Implement PLC (zero-input synthesis on lost packets).
-- [x] Fuzz the decoder against random/malformed packets.
+- [ ] **2.1** Download official test vectors from `https://opus-codec.org/testvectors/`.
+- [ ] **2.2** Create `testdata/` directory with vector files (input PCM + expected encoded output).
+- [ ] **2.3** Implement `TestConformance` that decodes each vector with `magnum.Decoder` and compares against reference PCM.
+- [ ] **2.4** Add cross-encode tests: encode with magnum, decode with pion/opus (and vice-versa).
+- [ ] **2.5** Integrate MOS-LQO scoring via `opus_compare` or pure-Go equivalent.
 
-### Success criteria
-`Decoder` successfully decodes `opus_demo`-generated test files for all
-sample rates and channel counts; passes the `testvectors` suite included
-with the libopus source tree.
+**Validation**: All official test vectors pass; cross-encode round-trips produce no errors.
 
 ---
 
-## Milestone 7 — Conformance testing and interoperability validation
+### Priority 3: CI Pipeline Setup
 
-**Goal:** demonstrate bit-exact or perceptually equivalent output relative
-to the libopus reference implementation.
+**Impact**: Prevents regressions; enables contributor confidence and release automation.
 
-### Tasks
-- [ ] Integrate the official Opus test vectors
-  (`https://opus-codec.org/testvectors/`) into the CI pipeline.
-- [ ] Add a `TestConformance` suite that decodes each vector with
-  `magnum.Decoder` and compares output against the reference PCM.
-- [ ] Add cross-encode tests: encode with `magnum`, decode with `pion/opus`
-  (and vice-versa); assert no decoder errors and acceptable signal quality.
-- [ ] Integrate `opus_compare` (or a pure-Go equivalent) for MOS-LQO
-  scoring in CI.
-- [ ] Profile and optimise hot paths (MDCT, PVQ) to reach within 3× of
-  libopus throughput on a representative benchmark corpus.
+**Current state**: No CI configuration; tests run only manually.
 
-### Success criteria
-All official Opus test vectors pass; cross-interop round-trips with
-pion/opus produce no errors; CI green on `linux/amd64`, `linux/arm64`,
-and `darwin/amd64`.
+- [ ] **3.1** Create `.github/workflows/ci.yml` with:
+  - `go build ./...`
+  - `go test -race -coverprofile=coverage.out ./...`
+  - `go vet ./...`
+  - Coverage threshold check (maintain ≥85%)
+- [ ] **3.2** Add matrix testing for `linux/amd64`, `linux/arm64`, `darwin/amd64`.
+- [ ] **3.3** Add conformance test job (after Priority 2 is complete).
+- [ ] **3.4** Publish coverage badge in README.
+
+**Validation**: All CI checks pass on push/PR; badge displays current coverage.
 
 ---
 
-## Dependency and architecture notes
+### Priority 4: Stereo Coding Improvements
 
-All milestones must be achievable with **zero CGO** and **no external
-dependencies** beyond the Go standard library. The architecture should
-remain layered so each codec (SILK, CELT) can be replaced or improved
-independently without breaking the public `Encoder`/`Decoder` API.
+**Impact**: Improves compression efficiency for stereo content; completes documented TODOs.
 
-Key reference material:
-- **RFC 6716** — Definition of the Opus Audio Codec
-  (<https://www.rfc-editor.org/rfc/rfc6716>)
-- **libopus source** — `https://gitlab.xiph.org/xiph/opus` (C reference;
-  useful for test vectors and algorithmic reference, not for copying code)
-- **pion/opus** — `https://github.com/pion/opus` (Go; API compatibility
-  target)
-- **Opus codec website** — `https://opus-codec.org/` (test vectors, tools)
+**Current state**: Stereo encoding exists but lacks proper mid/side and dual mono optimizations.
+
+- [ ] **4.1** Implement proper dual mono encoding (see `encoder.go:507`).
+- [ ] **4.2** Implement mid/side stereo coding (see `encoder.go:543`).
+- [ ] **4.3** Add tests comparing stereo quality vs. libopus at equivalent bitrates.
+
+**Validation**: PESQ/ViSQOL scores for stereo content within 0.5 MOS of libopus reference.
+
+---
+
+### Priority 5: Complexity Reduction in Core Paths
+
+**Impact**: Reduces bug risk and improves maintainability of the most critical code paths.
+
+**Current state**: `EncodeFrame` in `silk_frame.go` (complexity 38.4) and `celt_frame.go` (complexity 25.7) exceed typical thresholds.
+
+- [ ] **5.1** Extract logical subsections of `silk_frame.go:EncodeFrame` into helper functions (e.g., `encodeNLSF()`, `encodePitch()`, `encodeExcitation()`).
+- [ ] **5.2** Apply similar decomposition to `celt_frame.go:EncodeFrame`.
+- [ ] **5.3** Target complexity ≤15 per function.
+- [ ] **5.4** Ensure all new helpers have unit tests.
+
+**Validation**: `go-stats-generator` reports no functions with complexity >15 in critical paths.
+
+---
+
+### Priority 6: Performance Benchmarking
+
+**Impact**: Quantifies production readiness; required for comparison with libopus.
+
+**Current state**: No benchmarks exist.
+
+- [ ] **6.1** Add `BenchmarkEncode` for each codec path (SILK 8k, SILK 16k, CELT 24k, CELT 48k, Hybrid).
+- [ ] **6.2** Add `BenchmarkDecode` for each path.
+- [ ] **6.3** Profile and optimize hot paths (MDCT, PVQ) targeting ≤3× libopus throughput.
+- [ ] **6.4** Document benchmark results in README.
+
+**Validation**: Benchmarks exist; throughput documented; MDCT/PVQ optimized.
+
+---
+
+## Summary
+
+| Priority | Gap | Effort | Impact |
+|----------|-----|--------|--------|
+| P1 | Hybrid packet format | Medium | High—unblocks libopus interop |
+| P2 | Conformance vectors | Medium | High—production confidence |
+| P3 | CI pipeline | Low | Medium—prevents regressions |
+| P4 | Stereo coding | Medium | Medium—quality improvement |
+| P5 | Complexity reduction | Medium | Medium—maintainability |
+| P6 | Performance benchmarks | Low | Low—documentation |
+
+The project has achieved most of its stated goals. CELT and SILK produce libopus-decodable packets, the API matches pion/opus patterns, and the codebase is well-documented with 86% test coverage. The primary gap is **hybrid mode packet format compliance**—once resolved, the project will achieve full RFC 6716 interoperability. Adding CI and conformance tests will solidify the implementation for production use.
