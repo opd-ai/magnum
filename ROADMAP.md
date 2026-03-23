@@ -134,17 +134,17 @@ for narrowband and wideband modes.
 
 #### 3d — VAD and DTX
 - [x] Implement Voice Activity Detection (VAD) to detect silence frames.
-- [ ] Implement Discontinuous Transmission (DTX) to suppress redundant
+- [x] Implement Discontinuous Transmission (DTX) to suppress redundant
   silence packets.
 
 #### 3e — In-band FEC
-- [ ] Implement redundant LBRR (Low-Bit-Rate Redundancy) frames for
+- [x] Implement redundant LBRR (Low-Bit-Rate Redundancy) frames for
   in-band forward error correction (RFC 6716 §4.2.4).
 
 #### 3f — Integration
-- [ ] Replace the `flate` payload in `encodeFrame` with the SILK
+- [x] Replace the `flate` payload in `encodeFrame` with the SILK
   bitstream for 8 kHz and 16 kHz sample rates.
-- [ ] Validate encoded packets with `opusdec` / `opus_demo`.
+- [x] Validate encoded packets with `opusdec` / `opus_demo`.
 
 ### Success criteria
 Packets for 8 kHz and 16 kHz input decode in `libopus >= 1.3` and

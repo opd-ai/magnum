@@ -78,6 +78,19 @@ type Encoder struct {
 	// nil for 8 kHz and 16 kHz (SILK paths), or when useCELT is false.
 	celtEncoder *CELTFrameEncoder
 
+	// useSILK controls whether to use the SILK codec for 8/16 kHz.
+	// When false (default), uses flate compression for backward compatibility.
+	// When true, uses RFC 6716-style SILK encoding.
+	useSILK bool
+
+	// SILK encoder for 8 kHz and 16 kHz sample rates when useSILK is true.
+	// nil for 24 kHz and 48 kHz (CELT paths), or when useSILK is false.
+	silkEncoder *SILKFrameEncoder
+
+	// dtx implements Discontinuous Transmission for bandwidth reduction
+	// during silence periods. Initialized lazily when DTX is enabled.
+	dtx *DTX
+
 	// Reusable buffers to reduce allocations.
 	rawPCM    []byte        // pre-allocated buffer for PCM serialization
 	outputBuf bytes.Buffer  // reusable output buffer
@@ -178,6 +191,44 @@ func (e *Encoder) IsCELTEnabled() bool {
 	return e.useCELT && e.celtEncoder != nil
 }
 
+// EnableSILK enables RFC 6716–style SILK encoding for 8 kHz and 16 kHz
+// sample rates. Returns an error if the encoder's sample rate is not
+// suitable for SILK (must be 8000 or 16000 Hz).
+//
+// When SILK is enabled, packets are encoded using the SILK codec as specified
+// in RFC 6716 §4.2. Note that SILK is a lossy codec, so exact round-trip
+// reconstruction of PCM samples is not possible.
+//
+// This method is part of ROADMAP Milestone 3f (SILK integration).
+func (e *Encoder) EnableSILK() error {
+	if e.sampleRate != 8000 && e.sampleRate != 16000 {
+		return fmt.Errorf("magnum: SILK requires 8000 or 16000 Hz sample rate, got %d", e.sampleRate)
+	}
+
+	if e.silkEncoder == nil {
+		frameSize := e.sampleRate * frameDurationMs / 1000 // Samples per channel
+		silkConfig := SILKFrameConfig{
+			SampleRate: e.sampleRate,
+			Channels:   e.channels,
+			FrameSize:  frameSize,
+			Bitrate:    e.bitrate,
+		}
+		silkEnc, err := NewSILKFrameEncoder(silkConfig)
+		if err != nil {
+			return fmt.Errorf("magnum: enable SILK: %w", err)
+		}
+		e.silkEncoder = silkEnc
+	}
+
+	e.useSILK = true
+	return nil
+}
+
+// IsSILKEnabled returns true if SILK encoding is enabled for this encoder.
+func (e *Encoder) IsSILKEnabled() bool {
+	return e.useSILK && e.silkEncoder != nil
+}
+
 // Application returns the application mode configured for this encoder.
 func (e *Encoder) Application() Application {
 	return e.application
@@ -241,6 +292,56 @@ func (e *Encoder) Bandwidth() Bandwidth {
 	return e.bandwidth
 }
 
+// EnableDTX enables Discontinuous Transmission (DTX) mode.
+//
+// When DTX is enabled, the encoder uses Voice Activity Detection (VAD) to
+// detect silence frames. During silence, the encoder returns nil instead of
+// encoding a packet, reducing bandwidth. The decoder uses Packet Loss
+// Concealment (PLC) to synthesize comfort noise during these periods.
+//
+// DTX is most effective for VoIP applications with significant pause time.
+// It is automatically enabled when using ApplicationVoIP mode.
+func (e *Encoder) EnableDTX() {
+	if e.dtx == nil {
+		config := DefaultDTXConfig()
+		config.Enabled = true
+		e.dtx = NewDTX(e.sampleRate, config)
+	} else {
+		e.dtx.SetEnabled(true)
+	}
+}
+
+// DisableDTX disables Discontinuous Transmission (DTX) mode.
+func (e *Encoder) DisableDTX() {
+	if e.dtx != nil {
+		e.dtx.SetEnabled(false)
+	}
+}
+
+// IsDTXEnabled returns true if DTX mode is enabled.
+func (e *Encoder) IsDTXEnabled() bool {
+	return e.dtx != nil && e.dtx.IsEnabled()
+}
+
+// DTXStats returns DTX statistics: transmitted frames and suppressed frames.
+// Returns (0, 0) if DTX is not enabled.
+func (e *Encoder) DTXStats() (transmitted, suppressed int) {
+	if e.dtx == nil {
+		return 0, 0
+	}
+	return e.dtx.Stats()
+}
+
+// SetDTXConfig sets the DTX configuration.
+// Creates DTX if not already initialized.
+func (e *Encoder) SetDTXConfig(config DTXConfig) {
+	if e.dtx == nil {
+		e.dtx = NewDTX(e.sampleRate, config)
+	} else {
+		e.dtx.SetConfig(config)
+	}
+}
+
 // Encode encodes signed 16-bit interleaved PCM samples into an Opus packet.
 //
 // For stereo encoders, samples must be interleaved (L0, R0, L1, R1, …).
@@ -290,18 +391,71 @@ func (e *Encoder) Flush() ([]byte, error) {
 // For 24 kHz and 48 kHz sample rates, this uses the CELT codec to produce
 // RFC 6716–compliant packets. For 8 kHz and 16 kHz, flate compression is
 // used as a placeholder until SILK is implemented.
+//
+// When DTX is enabled and the frame is detected as silence, returns nil
+// to suppress transmission and reduce bandwidth.
 func (e *Encoder) encodeFrame(frame []int16) ([]byte, error) {
+	// Check DTX - if enabled and frame is silence, suppress transmission
+	if e.dtx != nil && e.dtx.IsEnabled() {
+		decision := e.dtx.ProcessInt16(frame)
+		if !decision.Transmit {
+			// DTX: suppress this frame (silence detected)
+			return nil, nil
+		}
+	}
+
 	isStereo := e.channels == 2
 	config := configForSampleRate(e.sampleRate)
 	toc := newTOCHeader(config, isStereo, frameCodeOneFrame)
 
-	// Use CELT when enabled and available
+	// Use SILK when enabled and available (8/16 kHz)
+	if e.useSILK && e.silkEncoder != nil {
+		return e.encodeFrameSILK(frame, toc)
+	}
+
+	// Use CELT when enabled and available (24/48 kHz)
 	if e.useCELT && e.celtEncoder != nil {
 		return e.encodeFrameCELT(frame, toc)
 	}
 
 	// Default: flate compression (backward compatible)
 	return e.encodeFrameFlate(frame, toc)
+}
+
+// encodeFrameSILK encodes a frame using the SILK codec for RFC 6716 compliance.
+func (e *Encoder) encodeFrameSILK(frame []int16, toc tocHeader) ([]byte, error) {
+	// Convert int16 samples to float64 for SILK processing.
+	// For stereo, we process the left channel only for now (simplification).
+	// Full stereo support would require dual mono encoding.
+	samplesPerChannel := len(frame) / e.channels
+	floatSamples := make([]float64, samplesPerChannel)
+
+	if e.channels == 1 {
+		for i, s := range frame {
+			floatSamples[i] = float64(s) / 32768.0
+		}
+	} else {
+		// Stereo: mix to mono for SILK processing (simplification)
+		// TODO: Implement proper dual mono encoding
+		for i := 0; i < samplesPerChannel; i++ {
+			left := float64(frame[i*2]) / 32768.0
+			right := float64(frame[i*2+1]) / 32768.0
+			floatSamples[i] = (left + right) / 2.0
+		}
+	}
+
+	// Encode with SILK
+	silkFrame, err := e.silkEncoder.EncodeFrame(floatSamples)
+	if err != nil {
+		return nil, fmt.Errorf("magnum: encode frame: SILK: %w", err)
+	}
+
+	// Build packet: TOC header + SILK payload
+	result := make([]byte, 1+len(silkFrame.Data))
+	result[0] = byte(toc)
+	copy(result[1:], silkFrame.Data)
+
+	return result, nil
 }
 
 // encodeFrameCELT encodes a frame using the CELT codec for RFC 6716 compliance.

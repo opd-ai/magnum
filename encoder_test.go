@@ -1082,3 +1082,227 @@ func oggCRC32(data []byte) uint32 {
 	}
 	return crc
 }
+
+// TestSILKEncoderIntegration tests SILK encoding integration at 8 kHz and 16 kHz.
+func TestSILKEncoderIntegration(t *testing.T) {
+	t.Parallel()
+
+	// Test 8 kHz mono
+	t.Run("8kHz_mono", func(t *testing.T) {
+		enc, err := NewEncoder(8000, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := enc.EnableSILK(); err != nil {
+			t.Fatalf("EnableSILK: %v", err)
+		}
+		if !enc.IsSILKEnabled() {
+			t.Error("IsSILKEnabled should return true after EnableSILK")
+		}
+
+		// Generate a test signal (sine wave) - 160 samples for 20ms at 8kHz
+		pcm := make([]int16, 160)
+		for i := range pcm {
+			pcm[i] = int16(10000.0 * sinTable(float64(i)*2*3.14159/40))
+		}
+
+		packet, err := enc.Encode(pcm)
+		if err != nil {
+			t.Fatalf("Encode: %v", err)
+		}
+		if len(packet) < 2 {
+			t.Fatalf("Encoded packet too short: %d bytes", len(packet))
+		}
+		t.Logf("8kHz SILK encoded %d samples to %d bytes", len(pcm), len(packet))
+	})
+
+	// Test 16 kHz mono
+	t.Run("16kHz_mono", func(t *testing.T) {
+		enc, err := NewEncoder(16000, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := enc.EnableSILK(); err != nil {
+			t.Fatalf("EnableSILK: %v", err)
+		}
+		if !enc.IsSILKEnabled() {
+			t.Error("IsSILKEnabled should return true after EnableSILK")
+		}
+
+		// Generate a test signal (sine wave) - 320 samples for 20ms at 16kHz
+		pcm := make([]int16, 320)
+		for i := range pcm {
+			pcm[i] = int16(10000.0 * sinTable(float64(i)*2*3.14159/80))
+		}
+
+		packet, err := enc.Encode(pcm)
+		if err != nil {
+			t.Fatalf("Encode: %v", err)
+		}
+		if len(packet) < 2 {
+			t.Fatalf("Encoded packet too short: %d bytes", len(packet))
+		}
+		t.Logf("16kHz SILK encoded %d samples to %d bytes", len(pcm), len(packet))
+	})
+
+	// Test error: SILK on 48 kHz should fail
+	t.Run("48kHz_unsupported", func(t *testing.T) {
+		enc, err := NewEncoder(48000, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = enc.EnableSILK()
+		if err == nil {
+			t.Error("EnableSILK should fail for 48 kHz")
+		}
+	})
+
+	// Test that IsSILKEnabled returns false by default
+	t.Run("disabled_by_default", func(t *testing.T) {
+		enc, err := NewEncoder(8000, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if enc.IsSILKEnabled() {
+			t.Error("IsSILKEnabled should return false by default")
+		}
+	})
+}
+
+// TestSILKLibopusValidation validates that SILK-encoded packets can be decoded
+// by libopus (via opusdec). This test requires the opus-tools package to be
+// installed and is skipped if opusdec is not available.
+//
+// This test fulfills ROADMAP Milestone 3f: "Validate encoded packets with
+// opusdec / opus_demo from libopus."
+func TestSILKLibopusValidation(t *testing.T) {
+	// Skip if opusdec is not available
+	if _, err := exec.LookPath("opusdec"); err != nil {
+		t.Skip("opusdec not available; install opus-tools to run this test")
+	}
+
+	testCases := []struct {
+		name          string
+		sampleRate    int
+		frameSize     int
+		granulePerPkt uint64 // granule increment per packet (in 48kHz samples)
+	}{
+		{"8kHz", 8000, 160, 960},   // 20ms = 160 samples at 8kHz = 960 at 48kHz
+		{"16kHz", 16000, 320, 960}, // 20ms = 320 samples at 16kHz = 960 at 48kHz
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create temporary directory for test files
+			tmpDir := t.TempDir()
+			oggFile := tmpDir + "/test.opus"
+			wavFile := tmpDir + "/test.wav"
+
+			// Create encoder with SILK enabled
+			enc, err := NewEncoder(tc.sampleRate, 1)
+			if err != nil {
+				t.Fatalf("NewEncoder: %v", err)
+			}
+			if err := enc.EnableSILK(); err != nil {
+				t.Fatalf("EnableSILK: %v", err)
+			}
+			enc.SetBitrate(12000)
+
+			// Generate 0.5 second of 440 Hz sine wave
+			const duration = 0.5
+			const frequency = 440.0
+			numSamples := int(float64(tc.sampleRate) * duration)
+			pcm := make([]int16, numSamples)
+			for i := range pcm {
+				theta := 2.0 * 3.14159265359 * frequency * float64(i) / float64(tc.sampleRate)
+				pcm[i] = int16(16000.0 * sinTable(theta))
+			}
+
+			// Encode all frames
+			var packets [][]byte
+			for i := 0; i < len(pcm); i += tc.frameSize {
+				end := i + tc.frameSize
+				if end > len(pcm) {
+					end = len(pcm)
+				}
+				packet, err := enc.Encode(pcm[i:end])
+				if err != nil {
+					t.Fatalf("Encode frame %d: %v", i/tc.frameSize, err)
+				}
+				if packet != nil {
+					packets = append(packets, packet)
+				}
+			}
+			if packet, err := enc.Flush(); err == nil && packet != nil {
+				packets = append(packets, packet)
+			}
+
+			if len(packets) == 0 {
+				t.Fatal("No packets encoded")
+			}
+
+			// Write to Ogg Opus file (resampled sample rate must be 48kHz for Opus header)
+			if err := writeSILKOggOpusFile(oggFile, packets, tc.sampleRate, tc.granulePerPkt); err != nil {
+				t.Fatalf("writeOggOpusFile: %v", err)
+			}
+
+			// Decode with opusdec
+			cmd := exec.Command("opusdec", oggFile, wavFile)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				// Log packet details for debugging
+				if len(packets) > 0 {
+					toc := packets[0][0]
+					t.Logf("First packet TOC: 0x%02x (config=%d, stereo=%d, code=%d)",
+						toc, (toc>>3)&0x1F, (toc>>2)&0x01, toc&0x03)
+					t.Logf("First packet size: %d bytes", len(packets[0]))
+				}
+				t.Fatalf("opusdec failed: %v\nOutput: %s", err, output)
+			}
+
+			// Verify WAV file was created
+			info, err := os.Stat(wavFile)
+			if err != nil {
+				t.Fatalf("WAV file not created: %v", err)
+			}
+			if info.Size() < 100 {
+				t.Errorf("WAV file too small: %d bytes", info.Size())
+			}
+
+			t.Logf("Successfully validated %d SILK packets at %dHz with libopus (opusdec)", len(packets), tc.sampleRate)
+		})
+	}
+}
+
+// writeSILKOggOpusFile writes SILK Opus packets to an Ogg container file.
+func writeSILKOggOpusFile(filename string, packets [][]byte, sampleRate int, granulePerPkt uint64) error {
+	f, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// ID Header page - note: Opus header always uses 48kHz as reference
+	idHeader := createOpusIDHeader(1, sampleRate)
+	if err := writeOggPage(f, idHeader, 0, 0, true, false); err != nil {
+		return err
+	}
+
+	// Comment Header page
+	commentHeader := createOpusCommentHeader()
+	if err := writeOggPage(f, commentHeader, 0, 1, false, false); err != nil {
+		return err
+	}
+
+	// Audio data pages
+	granulePos := uint64(0)
+	for i, pkt := range packets {
+		granulePos += granulePerPkt // 20ms worth of samples at 48kHz reference
+		isLast := i == len(packets)-1
+		if err := writeOggPage(f, pkt, granulePos, uint32(i+2), false, isLast); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
