@@ -178,6 +178,14 @@ func (gc *GainCoder) dequantizeDelta(index int) float64 {
 	return float64(index-GainQuantLevels/2) * GainQuantStep
 }
 
+// DequantizeGain dequantizes a single gain index to linear gain.
+// This is a simplified version for standalone gain decoding.
+func (gc *GainCoder) DequantizeGain(index int) float64 {
+	// Map index [0, 63] to dB range [GainMinDB, GainMaxDB]
+	logGain := GainMinDB + float64(index)/63.0*(GainMaxDB-GainMinDB)
+	return math.Pow(10, logGain/20.0)
+}
+
 // computeFrameGainIndex computes the frame-level gain index.
 func (gc *GainCoder) computeFrameGainIndex(baseGain float64) int {
 	// Map gain from [GainMinDB, GainMaxDB] to [0, 255]

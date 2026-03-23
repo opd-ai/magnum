@@ -158,11 +158,11 @@ Packets for 8 kHz and 16 kHz input decode in `libopus >= 1.3` and
 (Opus configurations 24–27, RFC 6716 §3.1).
 
 ### Tasks
-- [ ] Split the 24 kHz input into a SILK band (0–8 kHz) and a CELT
+- [x] Split the 24 kHz input into a SILK band (0–8 kHz) and a CELT
   band (8–12 kHz) using the hybrid framing defined in RFC 6716 §3.1.
-- [ ] Encode each band with the appropriate codec (SILK for lows,
+- [x] Encode each band with the appropriate codec (SILK for lows,
   CELT for highs) and multiplex into a single packet.
-- [ ] Implement the matching hybrid decoder.
+- [x] Implement the matching hybrid decoder.
 - [ ] Validate with `opusdec`.
 
 ### Success criteria
@@ -175,12 +175,12 @@ Packets for 8 kHz and 16 kHz input decode in `libopus >= 1.3` and
 **Goal:** lift the current "20 ms, single-frame only" restriction.
 
 ### Tasks
-- [ ] Add a `FrameDuration` option to `NewEncoder` supporting 2.5, 5, 10,
+- [x] Add a `FrameDuration` option to `NewEncoder` supporting 2.5, 5, 10,
   20, 40, and 60 ms (RFC 6716 §2.1.3).
-- [ ] Implement frame-code 1 (two equal-size frames) and frame-code 2
+- [x] Implement frame-code 1 (two equal-size frames) and frame-code 2
   (two different-size frames) in the packet serialiser.
-- [ ] Implement frame-code 3 (CBR/VBR multi-frame packets, RFC 6716 §3.2.5).
-- [ ] Update `Decode` to demultiplex all four frame codes.
+- [x] Implement frame-code 3 (CBR/VBR multi-frame packets, RFC 6716 §3.2.5).
+- [x] Update `Decode` to demultiplex all four frame codes.
 
 ### Success criteria
 Multi-frame packets produced by `magnum` round-trip through `Decode` and

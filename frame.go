@@ -43,6 +43,18 @@ func newFrameBuffer(sampleRate, channels int) *frameBuffer {
 	}
 }
 
+// newFrameBufferWithDuration creates a new frameBuffer sized for the specified
+// frame duration at the given sample rate and channel count.
+func newFrameBufferWithDuration(sampleRate, channels int, duration FrameDuration) *frameBuffer {
+	frameSize := duration.Samples(sampleRate) * channels
+	return &frameBuffer{
+		samples:       make([]int16, 0, frameSize),
+		ready:         make([][]int16, 0, 4), // pre-allocate for typical streaming use
+		frameSize:     frameSize,
+		maxQueueDepth: 0, // unbounded for backward compatibility
+	}
+}
+
 // write appends samples to the internal buffer. It processes input in
 // frame-sized chunks so that the partial-frame backing array never exceeds
 // frameSize samples. Completed frames are placed in the ready queue and

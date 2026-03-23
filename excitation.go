@@ -387,3 +387,23 @@ func (sc *ShellCoder) DecodePulseCount(dec *RangeDecoder, maxCount int) int {
 func (ee *ExcitationEncoder) Reset() {
 	ee.prevSeed = 0
 }
+
+// ExcitationDecoder decodes LPC excitation (residual) signals.
+type ExcitationDecoder struct {
+	subframeLen int
+}
+
+// NewExcitationDecoder creates a new excitation decoder.
+func NewExcitationDecoder(subframeLen int) *ExcitationDecoder {
+	if subframeLen <= 0 {
+		subframeLen = ExcSubframeLength
+	}
+	return &ExcitationDecoder{
+		subframeLen: subframeLen,
+	}
+}
+
+// Decode decodes an excitation frame from quantized parameters.
+func (ed *ExcitationDecoder) Decode(frame *ExcitationFrame, gains *FrameGains) []float64 {
+	return SynthesizeExcitation(frame, ed.subframeLen, gains)
+}

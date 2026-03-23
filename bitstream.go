@@ -15,6 +15,39 @@ const (
 	SampleRate48k = 48000 // fullband
 )
 
+// FrameDuration represents an Opus frame duration in milliseconds.
+// Supported values depend on the codec mode (RFC 6716 §3.1):
+//   - SILK:   10, 20, 40, 60 ms
+//   - CELT:   2.5, 5, 10, 20 ms
+//   - Hybrid: 10, 20 ms
+type FrameDuration float64
+
+const (
+	// FrameDuration2_5ms is 2.5 ms frame duration (CELT only).
+	FrameDuration2_5ms FrameDuration = 2.5
+	// FrameDuration5ms is 5 ms frame duration (CELT only).
+	FrameDuration5ms FrameDuration = 5
+	// FrameDuration10ms is 10 ms frame duration (SILK, CELT, Hybrid).
+	FrameDuration10ms FrameDuration = 10
+	// FrameDuration20ms is 20 ms frame duration (SILK, CELT, Hybrid). This is the default.
+	FrameDuration20ms FrameDuration = 20
+	// FrameDuration40ms is 40 ms frame duration (SILK only).
+	FrameDuration40ms FrameDuration = 40
+	// FrameDuration60ms is 60 ms frame duration (SILK only).
+	FrameDuration60ms FrameDuration = 60
+)
+
+// Milliseconds returns the frame duration in milliseconds as a float64.
+func (fd FrameDuration) Milliseconds() float64 {
+	return float64(fd)
+}
+
+// Samples returns the number of samples per channel for this frame duration
+// at the given sample rate.
+func (fd FrameDuration) Samples(sampleRate int) int {
+	return int(float64(sampleRate) * float64(fd) / 1000.0)
+}
+
 // supportedSampleRates lists all sample rates supported by this encoder/decoder.
 var supportedSampleRates = []int{SampleRate8k, SampleRate16k, SampleRate24k, SampleRate48k}
 
@@ -104,15 +137,89 @@ const (
 // configForSampleRate returns the Opus TOC configuration that best describes
 // a 20 ms frame at the given sample rate. Values follow RFC 6716 Table 2.
 func configForSampleRate(sampleRate int) Configuration {
+	return configForSampleRateAndDuration(sampleRate, FrameDuration20ms)
+}
+
+// configForSampleRateAndDuration returns the Opus TOC configuration for
+// the given sample rate and frame duration. Values follow RFC 6716 Table 2.
+//
+// RFC 6716 Table 2 layout (configurations 0-31):
+//
+//	SILK NB (8 kHz):    0=10ms, 1=20ms, 2=40ms, 3=60ms
+//	SILK MB (12 kHz):   4=10ms, 5=20ms, 6=40ms, 7=60ms
+//	SILK WB (16 kHz):   8=10ms, 9=20ms, 10=40ms, 11=60ms
+//	Hybrid SWB (24 kHz): 12=10ms, 13=20ms
+//	Hybrid FB (48 kHz):  16=10ms, 17=20ms
+//	CELT NB (8 kHz):    20=2.5ms, 21=5ms, 22=10ms, 23=20ms
+//	CELT WB (16 kHz):   (not standardized, use SILK)
+//	CELT SWB (24 kHz):  24=2.5ms, 25=5ms, 26=10ms, 27=20ms
+//	CELT FB (48 kHz):   28=2.5ms, 29=5ms, 30=10ms, 31=20ms
+func configForSampleRateAndDuration(sampleRate int, duration FrameDuration) Configuration {
+	// Map frame duration to index within each group
+	// SILK group: 10ms=0, 20ms=1, 40ms=2, 60ms=3
+	// CELT group: 2.5ms=0, 5ms=1, 10ms=2, 20ms=3
+	// Hybrid group: 10ms=0, 20ms=1
+
 	switch sampleRate {
 	case SampleRate8k:
-		return ConfigurationSILKNB20ms // narrowband
+		// SILK NB (configurations 0-3)
+		switch duration {
+		case FrameDuration10ms:
+			return 0
+		case FrameDuration20ms:
+			return 1
+		case FrameDuration40ms:
+			return 2
+		case FrameDuration60ms:
+			return 3
+		default:
+			return 1 // Default to 20ms
+		}
 	case SampleRate16k:
-		return ConfigurationSILKWB20ms // wideband
+		// SILK WB (configurations 8-11)
+		switch duration {
+		case FrameDuration10ms:
+			return 8
+		case FrameDuration20ms:
+			return 9
+		case FrameDuration40ms:
+			return 10
+		case FrameDuration60ms:
+			return 11
+		default:
+			return 9 // Default to 20ms
+		}
 	case SampleRate24k:
-		return ConfigurationCELTSWB20ms // superwideband
-	default: // SampleRate48k
-		return ConfigurationCELTFB20ms // fullband
+		// CELT SWB (configurations 24-27) for short durations
+		// Hybrid SWB (configurations 12-13) for 10/20ms - but we use CELT
+		switch duration {
+		case FrameDuration2_5ms:
+			return 24
+		case FrameDuration5ms:
+			return 25
+		case FrameDuration10ms:
+			return 26
+		case FrameDuration20ms:
+			return 27
+		default:
+			return 27 // Default to 20ms
+		}
+	case SampleRate48k:
+		// CELT FB (configurations 28-31)
+		switch duration {
+		case FrameDuration2_5ms:
+			return 28
+		case FrameDuration5ms:
+			return 29
+		case FrameDuration10ms:
+			return 30
+		case FrameDuration20ms:
+			return 31
+		default:
+			return 31 // Default to 20ms
+		}
+	default:
+		return 31 // Default to 48kHz 20ms
 	}
 }
 
@@ -151,6 +258,82 @@ func sampleRateForConfig(config Configuration) int {
 		return SampleRate48k
 	default:
 		return 0
+	}
+}
+
+// frameDurationForConfig returns the frame duration for the given configuration.
+// RFC 6716 Table 2 defines the frame duration index within each group:
+//
+//	SILK groups (0-11): index 0=10ms, 1=20ms, 2=40ms, 3=60ms
+//	Hybrid groups (12-19): index 0=10ms, 1=20ms (2,3 reserved)
+//	CELT groups (20-31): index 0=2.5ms, 1=5ms, 2=10ms, 3=20ms
+func frameDurationForConfig(config Configuration) FrameDuration {
+	// Get the index within the group (0-3)
+	var groupBase Configuration
+	var isCELT, isHybrid bool
+
+	switch {
+	case config <= configSILKNBMax:
+		groupBase = 0
+	case config <= configSILKMBMax:
+		groupBase = 4
+	case config <= configSILKWBMax:
+		groupBase = 8
+	case config <= configHybridSWBMax:
+		groupBase = 12
+		isHybrid = true
+	case config <= configHybridFBMax:
+		groupBase = 16
+		isHybrid = true
+	case config <= configCELTNBMax:
+		groupBase = 20
+		isCELT = true
+	case config <= configCELTSWBMax:
+		groupBase = 24
+		isCELT = true
+	case config <= configCELTFBMax:
+		groupBase = 28
+		isCELT = true
+	default:
+		return FrameDuration20ms
+	}
+
+	index := config - groupBase
+
+	if isCELT {
+		// CELT: 2.5, 5, 10, 20 ms
+		switch index {
+		case 0:
+			return FrameDuration2_5ms
+		case 1:
+			return FrameDuration5ms
+		case 2:
+			return FrameDuration10ms
+		default:
+			return FrameDuration20ms
+		}
+	}
+
+	if isHybrid {
+		// Hybrid: 10, 20 ms
+		switch index {
+		case 0:
+			return FrameDuration10ms
+		default:
+			return FrameDuration20ms
+		}
+	}
+
+	// SILK: 10, 20, 40, 60 ms
+	switch index {
+	case 0:
+		return FrameDuration10ms
+	case 1:
+		return FrameDuration20ms
+	case 2:
+		return FrameDuration40ms
+	default:
+		return FrameDuration60ms
 	}
 }
 

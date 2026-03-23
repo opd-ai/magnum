@@ -438,20 +438,19 @@ func TestDecodeShortPacket(t *testing.T) {
 	}
 }
 
-// TestDecodeInvalidFrameCode verifies that Decode rejects packets with
-// multi-frame encoding (frame codes 1, 2, 3).
+// TestDecodeInvalidFrameCode verifies that Decode rejects invalid packets.
+// All frame codes (0, 1, 2, 3) are now supported, so we test with
+// malformed packets that should fail validation.
 func TestDecodeInvalidFrameCode(t *testing.T) {
 	t.Parallel()
 
-	// Frame codes 1, 2, 3 are stored in bits 1-0 of the TOC byte.
-	// Use a minimal valid-looking packet (TOC byte + some flate data).
-	for _, fc := range []byte{1, 2, 3} {
-		tocByte := byte(ConfigurationCELTFB20ms<<3) | fc // config 31, frame code fc
-		packet := []byte{tocByte, 0x00}                  // minimal packet with invalid frame code
-		_, err := Decode(packet)
-		if !errors.Is(err, ErrUnsupportedFrameCode) {
-			t.Errorf("Decode with frame code %d: expected ErrUnsupportedFrameCode, got: %v", fc, err)
-		}
+	// A packet with frame code 3 but invalid M byte (frame count = 0)
+	// should fail with invalid frame data
+	tocByte := byte(ConfigurationCELTFB20ms<<3) | 3 // config 31, frame code 3
+	packet := []byte{tocByte, 0x01}                 // M byte: count=0, VBR=1
+	_, err := Decode(packet)
+	if err == nil {
+		t.Error("Decode with frame code 3 and count=0: expected error, got nil")
 	}
 }
 
@@ -1305,4 +1304,520 @@ func writeSILKOggOpusFile(filename string, packets [][]byte, sampleRate int, gra
 	}
 
 	return nil
+}
+
+// TestSetFrameDuration verifies that SetFrameDuration works correctly
+// for various sample rates and frame durations.
+func TestSetFrameDuration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		sampleRate  int
+		duration    FrameDuration
+		wantErr     bool
+		wantSamples int // expected samples per channel
+	}{
+		// SILK (8kHz, 16kHz): 10, 20, 40, 60 ms supported
+		{"8kHz 10ms", 8000, FrameDuration10ms, false, 80},
+		{"8kHz 20ms", 8000, FrameDuration20ms, false, 160},
+		{"8kHz 40ms", 8000, FrameDuration40ms, false, 320},
+		{"8kHz 60ms", 8000, FrameDuration60ms, false, 480},
+		{"8kHz 2.5ms unsupported", 8000, FrameDuration2_5ms, true, 0},
+		{"8kHz 5ms unsupported", 8000, FrameDuration5ms, true, 0},
+		{"16kHz 10ms", 16000, FrameDuration10ms, false, 160},
+		{"16kHz 20ms", 16000, FrameDuration20ms, false, 320},
+		{"16kHz 40ms", 16000, FrameDuration40ms, false, 640},
+		{"16kHz 60ms", 16000, FrameDuration60ms, false, 960},
+
+		// CELT (24kHz, 48kHz): 2.5, 5, 10, 20 ms supported
+		{"24kHz 2.5ms", 24000, FrameDuration2_5ms, false, 60},
+		{"24kHz 5ms", 24000, FrameDuration5ms, false, 120},
+		{"24kHz 10ms", 24000, FrameDuration10ms, false, 240},
+		{"24kHz 20ms", 24000, FrameDuration20ms, false, 480},
+		{"24kHz 40ms unsupported", 24000, FrameDuration40ms, true, 0},
+		{"24kHz 60ms unsupported", 24000, FrameDuration60ms, true, 0},
+		{"48kHz 2.5ms", 48000, FrameDuration2_5ms, false, 120},
+		{"48kHz 5ms", 48000, FrameDuration5ms, false, 240},
+		{"48kHz 10ms", 48000, FrameDuration10ms, false, 480},
+		{"48kHz 20ms", 48000, FrameDuration20ms, false, 960},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			enc, err := NewEncoder(tt.sampleRate, 1)
+			if err != nil {
+				t.Fatalf("NewEncoder(%d, 1): %v", tt.sampleRate, err)
+			}
+
+			err = enc.SetFrameDuration(tt.duration)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("SetFrameDuration(%v): expected error, got nil", tt.duration)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("SetFrameDuration(%v): unexpected error: %v", tt.duration, err)
+				return
+			}
+
+			// Verify the frame duration was set
+			if enc.FrameDuration() != tt.duration {
+				t.Errorf("FrameDuration(): got %v, want %v", enc.FrameDuration(), tt.duration)
+			}
+
+			// Verify the buffer frame size is correct (samples per channel for mono)
+			if enc.buffer.frameSize != tt.wantSamples {
+				t.Errorf("buffer.frameSize: got %d, want %d", enc.buffer.frameSize, tt.wantSamples)
+			}
+		})
+	}
+}
+
+// TestFrameDurationEncodeDecode verifies that encoding with different frame durations
+// produces valid packets that can be decoded.
+func TestFrameDurationEncodeDecode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		sampleRate int
+		duration   FrameDuration
+	}{
+		{"48kHz 10ms", 48000, FrameDuration10ms},
+		{"48kHz 20ms", 48000, FrameDuration20ms},
+		{"16kHz 10ms", 16000, FrameDuration10ms},
+		{"16kHz 40ms", 16000, FrameDuration40ms},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			enc, err := NewEncoder(tt.sampleRate, 1)
+			if err != nil {
+				t.Fatalf("NewEncoder: %v", err)
+			}
+
+			if err := enc.SetFrameDuration(tt.duration); err != nil {
+				t.Fatalf("SetFrameDuration: %v", err)
+			}
+
+			// Generate one frame of samples
+			frameSize := tt.duration.Samples(tt.sampleRate)
+			pcm := make([]int16, frameSize)
+			for i := range pcm {
+				// Generate a simple sine wave
+				theta := 2.0 * 3.14159265 * 440.0 * float64(i) / float64(tt.sampleRate)
+				pcm[i] = int16(16000.0 * sinTable(theta))
+			}
+
+			// Encode
+			packet, err := enc.Encode(pcm)
+			if err != nil {
+				t.Fatalf("Encode: %v", err)
+			}
+			if packet == nil {
+				t.Fatal("Encode returned nil packet")
+			}
+
+			// Verify TOC configuration matches expected frame duration
+			toc := tocHeader(packet[0])
+			config := toc.configuration()
+			gotDuration := frameDurationForConfig(config)
+			if gotDuration != tt.duration {
+				t.Errorf("TOC config %d indicates duration %v, want %v", config, gotDuration, tt.duration)
+			}
+
+			// Decode
+			decoded, err := Decode(packet)
+			if err != nil {
+				t.Fatalf("Decode: %v", err)
+			}
+			if len(decoded) != frameSize {
+				t.Errorf("Decoded %d samples, want %d", len(decoded), frameSize)
+			}
+		})
+	}
+}
+
+// TestFrameDurationMilliseconds verifies the Milliseconds method.
+func TestFrameDurationMilliseconds(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		duration FrameDuration
+		want     float64
+	}{
+		{FrameDuration2_5ms, 2.5},
+		{FrameDuration5ms, 5.0},
+		{FrameDuration10ms, 10.0},
+		{FrameDuration20ms, 20.0},
+		{FrameDuration40ms, 40.0},
+		{FrameDuration60ms, 60.0},
+	}
+
+	for _, tt := range tests {
+		if got := tt.duration.Milliseconds(); got != tt.want {
+			t.Errorf("FrameDuration(%v).Milliseconds() = %v, want %v", tt.duration, got, tt.want)
+		}
+	}
+}
+
+// TestFrameDurationSamples verifies the Samples method.
+func TestFrameDurationSamples(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		duration   FrameDuration
+		sampleRate int
+		want       int
+	}{
+		{FrameDuration2_5ms, 48000, 120},
+		{FrameDuration5ms, 48000, 240},
+		{FrameDuration10ms, 48000, 480},
+		{FrameDuration20ms, 48000, 960},
+		{FrameDuration10ms, 16000, 160},
+		{FrameDuration20ms, 16000, 320},
+		{FrameDuration40ms, 16000, 640},
+		{FrameDuration60ms, 16000, 960},
+	}
+
+	for _, tt := range tests {
+		if got := tt.duration.Samples(tt.sampleRate); got != tt.want {
+			t.Errorf("FrameDuration(%v).Samples(%d) = %d, want %d", tt.duration, tt.sampleRate, got, tt.want)
+		}
+	}
+}
+
+// TestEncodeTwoFrames verifies that EncodeTwoFrames produces valid multi-frame packets.
+func TestEncodeTwoFrames(t *testing.T) {
+	t.Parallel()
+
+	enc, err := NewEncoder(48000, 1)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+
+	// Set to 10ms frames so we encode two 10ms frames = 20ms total
+	if err := enc.SetFrameDuration(FrameDuration10ms); err != nil {
+		t.Fatalf("SetFrameDuration: %v", err)
+	}
+
+	frameSize := FrameDuration10ms.Samples(48000) // 480 samples
+
+	// Generate two frames of identical sine wave data (should produce equal-size frames)
+	frame1 := make([]int16, frameSize)
+	frame2 := make([]int16, frameSize)
+	for i := range frame1 {
+		theta := 2.0 * 3.14159265 * 440.0 * float64(i) / 48000.0
+		frame1[i] = int16(16000.0 * sinTable(theta))
+		frame2[i] = int16(16000.0 * sinTable(theta))
+	}
+
+	// Encode two frames
+	packet, err := enc.EncodeTwoFrames(frame1, frame2)
+	if err != nil {
+		t.Fatalf("EncodeTwoFrames: %v", err)
+	}
+	if packet == nil {
+		t.Fatal("EncodeTwoFrames returned nil packet")
+	}
+
+	// Check TOC header indicates two equal frames (frame code 1)
+	toc := tocHeader(packet[0])
+	fc := toc.frameCode()
+	if fc != frameCodeTwoEqualFrames {
+		t.Errorf("Expected frame code %d (two equal), got %d", frameCodeTwoEqualFrames, fc)
+	}
+
+	// Decode and verify we get back two frames worth of samples
+	decoded, err := Decode(packet)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	expectedSamples := frameSize * 2
+	if len(decoded) != expectedSamples {
+		t.Errorf("Decoded %d samples, want %d (two frames)", len(decoded), expectedSamples)
+	}
+}
+
+// TestEncodeTwoFramesDifferentSize verifies that EncodeTwoFrames handles
+// different-size frames correctly.
+func TestEncodeTwoFramesDifferentSize(t *testing.T) {
+	t.Parallel()
+
+	enc, err := NewEncoder(48000, 1)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+
+	if err := enc.SetFrameDuration(FrameDuration10ms); err != nil {
+		t.Fatalf("SetFrameDuration: %v", err)
+	}
+
+	frameSize := FrameDuration10ms.Samples(48000)
+
+	// Frame 1: sine wave (compresses to some size)
+	frame1 := make([]int16, frameSize)
+	for i := range frame1 {
+		theta := 2.0 * 3.14159265 * 440.0 * float64(i) / 48000.0
+		frame1[i] = int16(16000.0 * sinTable(theta))
+	}
+
+	// Frame 2: different frequency (should compress to different size)
+	frame2 := make([]int16, frameSize)
+	for i := range frame2 {
+		theta := 2.0 * 3.14159265 * 880.0 * float64(i) / 48000.0
+		frame2[i] = int16(8000.0 * sinTable(theta))
+	}
+
+	packet, err := enc.EncodeTwoFrames(frame1, frame2)
+	if err != nil {
+		t.Fatalf("EncodeTwoFrames: %v", err)
+	}
+	if packet == nil {
+		t.Fatal("EncodeTwoFrames returned nil packet")
+	}
+
+	// The frame code depends on whether the compressed sizes are equal
+	// We just verify decoding works
+	decoded, err := Decode(packet)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	expectedSamples := frameSize * 2
+	if len(decoded) != expectedSamples {
+		t.Errorf("Decoded %d samples, want %d", len(decoded), expectedSamples)
+	}
+}
+
+// TestDecodeFrameCode2 specifically tests frame code 2 (two different-size frames).
+func TestDecodeFrameCode2(t *testing.T) {
+	t.Parallel()
+
+	enc, err := NewEncoder(48000, 1)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+
+	if err := enc.SetFrameDuration(FrameDuration10ms); err != nil {
+		t.Fatalf("SetFrameDuration: %v", err)
+	}
+
+	frameSize := FrameDuration10ms.Samples(48000)
+
+	// Create frames that will definitely have different compressed sizes
+	frame1 := make([]int16, frameSize)
+	for i := range frame1 {
+		frame1[i] = int16(i * 10) // Linear ramp
+	}
+
+	frame2 := make([]int16, frameSize)
+	for i := range frame2 {
+		frame2[i] = 0 // Silence (highly compressible)
+	}
+
+	packet, err := enc.EncodeTwoFrames(frame1, frame2)
+	if err != nil {
+		t.Fatalf("EncodeTwoFrames: %v", err)
+	}
+	if packet == nil {
+		t.Fatal("EncodeTwoFrames returned nil packet")
+	}
+
+	// Decode
+	decoded, err := Decode(packet)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	expectedSamples := frameSize * 2
+	if len(decoded) != expectedSamples {
+		t.Errorf("Decoded %d samples, want %d", len(decoded), expectedSamples)
+	}
+
+	// Verify the decoded data approximately matches input
+	// First frame should be the ramp
+	for i := 0; i < frameSize; i++ {
+		expected := int16(i * 10)
+		if decoded[i] != expected {
+			t.Errorf("Frame1 sample %d: got %d, want %d", i, decoded[i], expected)
+			break
+		}
+	}
+	// Second frame should be silence
+	for i := frameSize; i < frameSize*2; i++ {
+		if decoded[i] != 0 {
+			t.Errorf("Frame2 sample %d: got %d, want 0", i, decoded[i])
+			break
+		}
+	}
+}
+
+// TestEncodeFrameLengthRoundTrip verifies the frame length encoding/decoding.
+func TestEncodeFrameLengthRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []int{0, 1, 100, 251, 252, 253, 500, 1000, 1275}
+	for _, length := range tests {
+		encoded := encodeFrameLength(length)
+		decoded, consumed := decodeFrameLength(encoded)
+		if decoded != length {
+			t.Errorf("Length %d: encoded=%v, decoded=%d", length, encoded, decoded)
+		}
+		if consumed != len(encoded) {
+			t.Errorf("Length %d: consumed=%d, want %d", length, consumed, len(encoded))
+		}
+	}
+}
+
+// TestEncodeMultipleFramesCode3 verifies that EncodeMultipleFrames produces valid
+// frame code 3 packets.
+func TestEncodeMultipleFramesCode3(t *testing.T) {
+	t.Parallel()
+
+	enc, err := NewEncoder(48000, 1)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+
+	// Set to 5ms frames so we can encode multiple frames
+	if err := enc.SetFrameDuration(FrameDuration5ms); err != nil {
+		t.Fatalf("SetFrameDuration: %v", err)
+	}
+
+	frameSize := FrameDuration5ms.Samples(48000) // 240 samples
+
+	// Generate 4 frames
+	frames := make([][]int16, 4)
+	for i := range frames {
+		frames[i] = make([]int16, frameSize)
+		for j := range frames[i] {
+			theta := 2.0 * 3.14159265 * 440.0 * float64(j+i*frameSize) / 48000.0
+			frames[i][j] = int16(16000.0 * sinTable(theta))
+		}
+	}
+
+	// Encode multiple frames
+	packet, err := enc.EncodeMultipleFrames(frames)
+	if err != nil {
+		t.Fatalf("EncodeMultipleFrames: %v", err)
+	}
+	if packet == nil {
+		t.Fatal("EncodeMultipleFrames returned nil packet")
+	}
+
+	// Check TOC header indicates frame code 3
+	toc := tocHeader(packet[0])
+	fc := toc.frameCode()
+	if fc != frameCodeArbitraryFrames {
+		t.Errorf("Expected frame code %d (arbitrary), got %d", frameCodeArbitraryFrames, fc)
+	}
+
+	// Check M byte
+	mByte := packet[1]
+	frameCount := int(mByte >> 2)
+	isVBR := (mByte & 0x01) != 0
+	if frameCount != 4 {
+		t.Errorf("M byte frame count: got %d, want 4", frameCount)
+	}
+	if !isVBR {
+		t.Errorf("Expected VBR flag to be set")
+	}
+
+	// Decode and verify we get back all frames worth of samples
+	decoded, err := Decode(packet)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	expectedSamples := frameSize * 4
+	if len(decoded) != expectedSamples {
+		t.Errorf("Decoded %d samples, want %d (4 frames)", len(decoded), expectedSamples)
+	}
+}
+
+// TestEncodeMultipleFramesVaryingSizes verifies that EncodeMultipleFrames
+// handles frames that compress to different sizes.
+func TestEncodeMultipleFramesVaryingSizes(t *testing.T) {
+	t.Parallel()
+
+	enc, err := NewEncoder(48000, 1)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+
+	if err := enc.SetFrameDuration(FrameDuration5ms); err != nil {
+		t.Fatalf("SetFrameDuration: %v", err)
+	}
+
+	frameSize := FrameDuration5ms.Samples(48000)
+
+	// Generate 3 frames with different content
+	frames := make([][]int16, 3)
+
+	// Frame 0: Sine wave
+	frames[0] = make([]int16, frameSize)
+	for i := range frames[0] {
+		theta := 2.0 * 3.14159265 * 440.0 * float64(i) / 48000.0
+		frames[0][i] = int16(16000.0 * sinTable(theta))
+	}
+
+	// Frame 1: Silence (highly compressible)
+	frames[1] = make([]int16, frameSize)
+
+	// Frame 2: Linear ramp
+	frames[2] = make([]int16, frameSize)
+	for i := range frames[2] {
+		frames[2][i] = int16(i * 100)
+	}
+
+	packet, err := enc.EncodeMultipleFrames(frames)
+	if err != nil {
+		t.Fatalf("EncodeMultipleFrames: %v", err)
+	}
+
+	decoded, err := Decode(packet)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+
+	expectedSamples := frameSize * 3
+	if len(decoded) != expectedSamples {
+		t.Errorf("Decoded %d samples, want %d", len(decoded), expectedSamples)
+	}
+
+	// Verify frame content approximately matches
+	// Frame 1 should be silence
+	for i := frameSize; i < frameSize*2; i++ {
+		if decoded[i] != 0 {
+			t.Errorf("Frame 1 sample %d: got %d, want 0", i-frameSize, decoded[i])
+			break
+		}
+	}
+}
+
+// TestDecodeFrameCode3Invalid verifies that malformed frame code 3 packets
+// are rejected.
+func TestDecodeFrameCode3Invalid(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		packet []byte
+	}{
+		{"empty M byte", []byte{byte(ConfigurationCELTFB20ms<<3) | 3}},
+		{"zero frame count", []byte{byte(ConfigurationCELTFB20ms<<3) | 3, 0x01}}, // count=0, VBR=1
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := Decode(tt.packet)
+			if err == nil {
+				t.Error("Expected error for invalid packet, got nil")
+			}
+		})
+	}
 }

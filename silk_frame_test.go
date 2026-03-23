@@ -365,3 +365,156 @@ func BenchmarkSILKEncodeFrame(b *testing.B) {
 		_, _ = enc.EncodeFrame(samples)
 	}
 }
+
+// TestNewSILKFrameDecoder tests SILK decoder creation.
+func TestNewSILKFrameDecoder(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  SILKFrameConfig
+		wantErr bool
+	}{
+		{
+			name: "8kHz mono",
+			config: SILKFrameConfig{
+				SampleRate: 8000,
+				Channels:   1,
+				FrameSize:  160,
+				Bitrate:    12000,
+			},
+			wantErr: false,
+		},
+		{
+			name: "16kHz mono",
+			config: SILKFrameConfig{
+				SampleRate: 16000,
+				Channels:   1,
+				FrameSize:  320,
+				Bitrate:    24000,
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid sample rate",
+			config: SILKFrameConfig{
+				SampleRate: 48000,
+				Channels:   1,
+				FrameSize:  960,
+				Bitrate:    64000,
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dec, err := NewSILKFrameDecoder(tt.config)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+			if dec == nil {
+				t.Error("decoder is nil")
+			}
+		})
+	}
+}
+
+// TestSILKFrameDecoder_DecodeFrame tests basic decoding.
+func TestSILKFrameDecoder_DecodeFrame(t *testing.T) {
+	config := SILKFrameConfig{
+		SampleRate: 16000,
+		Channels:   1,
+		FrameSize:  320,
+		Bitrate:    24000,
+	}
+
+	// Create encoder and decoder
+	enc, err := NewSILKFrameEncoder(config)
+	if err != nil {
+		t.Fatalf("NewSILKFrameEncoder error: %v", err)
+	}
+
+	dec, err := NewSILKFrameDecoder(config)
+	if err != nil {
+		t.Fatalf("NewSILKFrameDecoder error: %v", err)
+	}
+
+	// Generate test signal
+	samples := make([]float64, config.FrameSize)
+	for i := range samples {
+		samples[i] = 0.5 * math.Sin(2*math.Pi*200*float64(i)/float64(config.SampleRate))
+	}
+
+	// Encode
+	encoded, err := enc.EncodeFrame(samples)
+	if err != nil {
+		t.Fatalf("EncodeFrame error: %v", err)
+	}
+
+	// Decode
+	decoded, err := dec.DecodeFrame(encoded.Data)
+	if err != nil {
+		t.Fatalf("DecodeFrame error: %v", err)
+	}
+
+	if len(decoded) != config.FrameSize {
+		t.Errorf("decoded length = %d, want %d", len(decoded), config.FrameSize)
+	}
+
+	t.Logf("Encoded: %d bytes, Decoded: %d samples", len(encoded.Data), len(decoded))
+}
+
+// TestSILKFrameDecoder_PacketLoss tests PLC on packet loss.
+func TestSILKFrameDecoder_PacketLoss(t *testing.T) {
+	config := SILKFrameConfig{
+		SampleRate: 16000,
+		Channels:   1,
+		FrameSize:  320,
+		Bitrate:    24000,
+	}
+
+	dec, err := NewSILKFrameDecoder(config)
+	if err != nil {
+		t.Fatalf("NewSILKFrameDecoder error: %v", err)
+	}
+
+	// Simulate packet loss with empty data
+	concealed, err := dec.DecodeFrame(nil)
+	if err != nil {
+		t.Fatalf("DecodeFrame with nil error: %v", err)
+	}
+
+	if len(concealed) != config.FrameSize {
+		t.Errorf("concealed length = %d, want %d", len(concealed), config.FrameSize)
+	}
+}
+
+// TestSILKFrameDecoder_Reset tests decoder reset.
+func TestSILKFrameDecoder_Reset(t *testing.T) {
+	config := SILKFrameConfig{
+		SampleRate: 16000,
+		Channels:   1,
+		FrameSize:  320,
+		Bitrate:    24000,
+	}
+
+	dec, err := NewSILKFrameDecoder(config)
+	if err != nil {
+		t.Fatalf("NewSILKFrameDecoder error: %v", err)
+	}
+
+	// Reset should not panic
+	dec.Reset()
+
+	// Should be able to decode after reset
+	_, err = dec.DecodeFrame(nil)
+	if err != nil {
+		t.Fatalf("After reset: DecodeFrame error: %v", err)
+	}
+}

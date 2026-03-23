@@ -445,29 +445,119 @@ func decodePayloadWithReader(packet, buf, chunk []byte, flateR io.ReadCloser) (r
 
 	// Parse and validate TOC header.
 	toc := tocHeader(packet[0])
-	if toc.frameCode() != frameCodeOneFrame {
-		return nil, false, 0, ErrUnsupportedFrameCode
-	}
+	fc := toc.frameCode()
 	stereo = toc.isStereo()
 	config = toc.configuration()
 
-	// Decompress the payload (everything after the TOC byte).
-	// Limit decompressed output to maxDecompressedBytes+1 so that zip-bomb
-	// payloads are caught without exhausting memory.
+	// Handle different frame codes
+	switch fc {
+	case frameCodeOneFrame:
+		// Single frame: payload starts at byte 1
+		return decodeFlatePayload(packet[1:], buf, chunk, flateR, stereo, config)
+
+	case frameCodeTwoEqualFrames:
+		// Two equal-size frames: [TOC][Frame1][Frame2]
+		// Each frame is half of the remaining packet
+		payloadLen := len(packet) - 1
+		if payloadLen%2 != 0 {
+			return nil, false, 0, ErrInvalidFrameData
+		}
+		frameLen := payloadLen / 2
+		frame1 := packet[1 : 1+frameLen]
+		frame2 := packet[1+frameLen:]
+		return decodeTwoFrames(frame1, frame2, buf, chunk, flateR, stereo, config)
+
+	case frameCodeTwoDifferentFrames:
+		// Two different-size frames: [TOC][length1][Frame1][Frame2]
+		if len(packet) < 2 {
+			return nil, false, 0, io.ErrUnexpectedEOF
+		}
+		frame1Len, consumed := decodeFrameLength(packet[1:])
+		if consumed == 0 || 1+consumed+frame1Len > len(packet) {
+			return nil, false, 0, ErrInvalidFrameData
+		}
+		frame1Start := 1 + consumed
+		frame1 := packet[frame1Start : frame1Start+frame1Len]
+		frame2 := packet[frame1Start+frame1Len:]
+		return decodeTwoFrames(frame1, frame2, buf, chunk, flateR, stereo, config)
+
+	case frameCodeArbitraryFrames:
+		// VBR multi-frame packets (frame code 3)
+		// Format: [TOC][M byte][len1][frame1]...[lenM-1][frameM-1][frameM]
+		if len(packet) < 2 {
+			return nil, false, 0, io.ErrUnexpectedEOF
+		}
+		mByte := packet[1]
+		frameCount := int(mByte >> 2)
+		// padding := (mByte & 0x02) != 0 // bit 1 - padding flag (not used yet)
+		isVBR := (mByte & 0x01) != 0 // bit 0 - VBR flag
+
+		if frameCount == 0 || frameCount > 48 {
+			return nil, false, 0, ErrInvalidFrameData
+		}
+
+		if !isVBR {
+			// CBR mode: all frames same size, no length prefixes
+			// Total payload divided equally among frames
+			payload := packet[2:]
+			if len(payload)%frameCount != 0 {
+				return nil, false, 0, ErrInvalidFrameData
+			}
+			frameLen := len(payload) / frameCount
+			frames := make([][]byte, frameCount)
+			for i := 0; i < frameCount; i++ {
+				frames[i] = payload[i*frameLen : (i+1)*frameLen]
+			}
+			return decodeMultipleFrames(frames, buf, chunk, stereo, config)
+		}
+
+		// VBR mode: length prefix for all but last frame
+		offset := 2
+		frames := make([][]byte, frameCount)
+		for i := 0; i < frameCount-1; i++ {
+			if offset >= len(packet) {
+				return nil, false, 0, ErrInvalidFrameData
+			}
+			frameLen, consumed := decodeFrameLength(packet[offset:])
+			if consumed == 0 {
+				return nil, false, 0, ErrInvalidFrameData
+			}
+			offset += consumed
+			if offset+frameLen > len(packet) {
+				return nil, false, 0, ErrInvalidFrameData
+			}
+			frames[i] = packet[offset : offset+frameLen]
+			offset += frameLen
+		}
+		// Last frame uses remaining bytes
+		frames[frameCount-1] = packet[offset:]
+		return decodeMultipleFrames(frames, buf, chunk, stereo, config)
+
+	default:
+		return nil, false, 0, ErrUnsupportedFrameCode
+	}
+}
+
+// decodeFlatePayload decompresses a single flate-compressed frame payload.
+func decodeFlatePayload(payload, buf, chunk []byte, flateR io.ReadCloser, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
+	if len(payload) == 0 {
+		return nil, false, 0, io.ErrUnexpectedEOF
+	}
+
+	// Decompress the payload.
 	var r io.ReadCloser
 	if flateR != nil {
-		// Reset the existing flate reader with new input.
 		if resetter, ok := flateR.(flate.Resetter); ok {
-			if err := resetter.Reset(bytes.NewReader(packet[1:]), nil); err != nil {
+			if err := resetter.Reset(bytes.NewReader(payload), nil); err != nil {
 				return nil, false, 0, err
 			}
 			r = flateR
 		} else {
-			r = flate.NewReader(bytes.NewReader(packet[1:]))
+			r = flate.NewReader(bytes.NewReader(payload))
 			defer r.Close()
 		}
 	} else {
-		r = flate.NewReader(bytes.NewReader(packet[1:]))
+		r = flate.NewReader(bytes.NewReader(payload))
 		defer r.Close()
 	}
 
@@ -502,6 +592,59 @@ func decodePayloadWithReader(packet, buf, chunk []byte, flateR io.ReadCloser) (r
 
 	if len(buf)%2 != 0 {
 		return nil, false, 0, ErrInvalidFrameData
+	}
+
+	return buf, stereo, config, nil
+}
+
+// decodeTwoFrames decodes two flate-compressed frames and concatenates them.
+func decodeTwoFrames(frame1, frame2, buf, chunk []byte, flateR io.ReadCloser, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
+	// Decode first frame
+	raw1, _, _, err := decodeFlatePayload(frame1, nil, chunk, nil, stereo, config)
+	if err != nil {
+		return nil, false, 0, fmt.Errorf("decode frame 1: %w", err)
+	}
+
+	// Decode second frame
+	raw2, _, _, err := decodeFlatePayload(frame2, nil, chunk, nil, stereo, config)
+	if err != nil {
+		return nil, false, 0, fmt.Errorf("decode frame 2: %w", err)
+	}
+
+	// Concatenate frames
+	if buf != nil {
+		buf = buf[:0]
+	} else {
+		buf = make([]byte, 0, len(raw1)+len(raw2))
+	}
+	buf = append(buf, raw1...)
+	buf = append(buf, raw2...)
+
+	return buf, stereo, config, nil
+}
+
+// decodeMultipleFrames decodes multiple flate-compressed frames and concatenates them.
+func decodeMultipleFrames(frames [][]byte, buf, chunk []byte, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
+	var totalLen int
+	decodedFrames := make([][]byte, len(frames))
+
+	for i, frame := range frames {
+		raw, _, _, err := decodeFlatePayload(frame, nil, chunk, nil, stereo, config)
+		if err != nil {
+			return nil, false, 0, fmt.Errorf("decode frame %d: %w", i, err)
+		}
+		decodedFrames[i] = raw
+		totalLen += len(raw)
+	}
+
+	// Concatenate all frames
+	if buf != nil {
+		buf = buf[:0]
+	} else {
+		buf = make([]byte, 0, totalLen)
+	}
+	for _, decoded := range decodedFrames {
+		buf = append(buf, decoded...)
 	}
 
 	return buf, stereo, config, nil

@@ -61,13 +61,14 @@ const (
 // interoperable with standard Opus decoders. Use the [Decode] function
 // (or a matching magnum decoder) to recover the original PCM samples.
 type Encoder struct {
-	sampleRate  int
-	channels    int
-	bitrate     int
-	application Application
-	complexity  int       // 0-10, default 10
-	bandwidth   Bandwidth // default BandwidthAuto
-	buffer      *frameBuffer
+	sampleRate    int
+	channels      int
+	bitrate       int
+	application   Application
+	complexity    int           // 0-10, default 10
+	bandwidth     Bandwidth     // default BandwidthAuto
+	frameDuration FrameDuration // default FrameDuration20ms
+	buffer        *frameBuffer
 
 	// useCELT controls whether to use the CELT codec for 24/48 kHz.
 	// When false (default), uses flate compression for backward compatibility.
@@ -125,7 +126,7 @@ func NewEncoderWithApplication(sampleRate, channels int, app Application) (*Enco
 		return nil, ErrUnsupportedChannelCount
 	}
 
-	fb := newFrameBuffer(sampleRate, channels)
+	fb := newFrameBufferWithDuration(sampleRate, channels, FrameDuration20ms)
 
 	// Pre-allocate rawPCM buffer for one frame (frameSize * 2 bytes per sample).
 	rawPCM := make([]byte, fb.frameSize*2)
@@ -138,17 +139,18 @@ func NewEncoderWithApplication(sampleRate, channels int, app Application) (*Enco
 	}
 
 	return &Encoder{
-		sampleRate:  sampleRate,
-		channels:    channels,
-		bitrate:     64000, // default: 64 kbps
-		application: app,
-		complexity:  10,            // default: highest quality
-		bandwidth:   BandwidthAuto, // default: automatic
-		buffer:      fb,
-		useCELT:     false, // default: use flate for backward compatibility
-		rawPCM:      rawPCM,
-		outputBuf:   outputBuf,
-		flateW:      flateW,
+		sampleRate:    sampleRate,
+		channels:      channels,
+		bitrate:       64000, // default: 64 kbps
+		application:   app,
+		complexity:    10,                // default: highest quality
+		bandwidth:     BandwidthAuto,     // default: automatic
+		frameDuration: FrameDuration20ms, // default: 20 ms
+		buffer:        fb,
+		useCELT:       false, // default: use flate for backward compatibility
+		rawPCM:        rawPCM,
+		outputBuf:     outputBuf,
+		flateW:        flateW,
 	}, nil
 }
 
@@ -292,6 +294,72 @@ func (e *Encoder) Bandwidth() Bandwidth {
 	return e.bandwidth
 }
 
+// SetFrameDuration sets the frame duration for encoding.
+// Supported durations depend on the sample rate:
+//   - 8/16 kHz (SILK):  10, 20, 40, 60 ms
+//   - 24/48 kHz (CELT): 2.5, 5, 10, 20 ms
+//
+// Returns an error if the duration is not supported for the encoder's sample rate.
+// Changing the frame duration recreates the internal buffer, discarding any
+// buffered samples.
+func (e *Encoder) SetFrameDuration(duration FrameDuration) error {
+	// Validate duration for sample rate
+	if err := validateFrameDuration(e.sampleRate, duration); err != nil {
+		return err
+	}
+
+	e.frameDuration = duration
+
+	// Recreate frame buffer with new duration
+	e.buffer = newFrameBufferWithDuration(e.sampleRate, e.channels, duration)
+
+	// Reallocate rawPCM buffer for new frame size
+	e.rawPCM = make([]byte, e.buffer.frameSize*2)
+
+	// Update CELT encoder if active
+	if e.celtEncoder != nil {
+		frameSize := duration.Samples(e.sampleRate)
+		e.celtEncoder.config.FrameSize = frameSize
+	}
+
+	// Update SILK encoder if active
+	if e.silkEncoder != nil {
+		frameSize := duration.Samples(e.sampleRate)
+		e.silkEncoder.config.FrameSize = frameSize
+	}
+
+	return nil
+}
+
+// FrameDuration returns the frame duration configured for this encoder.
+func (e *Encoder) FrameDuration() FrameDuration {
+	return e.frameDuration
+}
+
+// validateFrameDuration checks if the given duration is valid for the sample rate.
+func validateFrameDuration(sampleRate int, duration FrameDuration) error {
+	switch sampleRate {
+	case SampleRate8k, SampleRate16k:
+		// SILK mode: 10, 20, 40, 60 ms
+		switch duration {
+		case FrameDuration10ms, FrameDuration20ms, FrameDuration40ms, FrameDuration60ms:
+			return nil
+		default:
+			return fmt.Errorf("magnum: frame duration %.1fms not supported for %d Hz (SILK supports 10, 20, 40, 60 ms)", duration.Milliseconds(), sampleRate)
+		}
+	case SampleRate24k, SampleRate48k:
+		// CELT mode: 2.5, 5, 10, 20 ms
+		switch duration {
+		case FrameDuration2_5ms, FrameDuration5ms, FrameDuration10ms, FrameDuration20ms:
+			return nil
+		default:
+			return fmt.Errorf("magnum: frame duration %.1fms not supported for %d Hz (CELT supports 2.5, 5, 10, 20 ms)", duration.Milliseconds(), sampleRate)
+		}
+	default:
+		return fmt.Errorf("magnum: unsupported sample rate %d", sampleRate)
+	}
+}
+
 // EnableDTX enables Discontinuous Transmission (DTX) mode.
 //
 // When DTX is enabled, the encoder uses Voice Activity Detection (VAD) to
@@ -405,7 +473,7 @@ func (e *Encoder) encodeFrame(frame []int16) ([]byte, error) {
 	}
 
 	isStereo := e.channels == 2
-	config := configForSampleRate(e.sampleRate)
+	config := configForSampleRateAndDuration(e.sampleRate, e.frameDuration)
 	toc := newTOCHeader(config, isStereo, frameCodeOneFrame)
 
 	// Use SILK when enabled and available (8/16 kHz)
@@ -521,4 +589,293 @@ func (e *Encoder) encodeFrameFlate(frame []int16, toc tocHeader) ([]byte, error)
 	result := make([]byte, e.outputBuf.Len())
 	copy(result, e.outputBuf.Bytes())
 	return result, nil
+}
+
+// EncodeTwoFrames encodes two audio frames into a single Opus packet.
+// This produces a frame-code 1 packet (two equal-size frames) if the
+// compressed sizes are equal, or a frame-code 2 packet (two different-size
+// frames) if they differ.
+//
+// Each frame must be exactly the encoder's frame size (FrameDuration worth
+// of samples × channels). Returns an error if the frames are the wrong size.
+//
+// This is useful for reducing packet overhead when encoding at lower latencies
+// (e.g., two 10ms frames = 20ms effective duration with better compression).
+func (e *Encoder) EncodeTwoFrames(frame1, frame2 []int16) ([]byte, error) {
+	expectedSize := e.buffer.frameSize
+	if len(frame1) != expectedSize {
+		return nil, fmt.Errorf("magnum: frame1 has %d samples, want %d", len(frame1), expectedSize)
+	}
+	if len(frame2) != expectedSize {
+		return nil, fmt.Errorf("magnum: frame2 has %d samples, want %d", len(frame2), expectedSize)
+	}
+
+	// Encode each frame individually to get the payloads
+	// We need to temporarily store the payloads without TOC headers
+	payload1, err := e.encodeFramePayload(frame1)
+	if err != nil {
+		return nil, fmt.Errorf("magnum: encode frame1: %w", err)
+	}
+	payload2, err := e.encodeFramePayload(frame2)
+	if err != nil {
+		return nil, fmt.Errorf("magnum: encode frame2: %w", err)
+	}
+
+	// DTX check - if both frames are silence, return nil
+	if payload1 == nil && payload2 == nil {
+		return nil, nil
+	}
+	// If only one is DTX-suppressed, encode it as silence
+	if payload1 == nil {
+		payload1 = e.encodeSilencePayload()
+	}
+	if payload2 == nil {
+		payload2 = e.encodeSilencePayload()
+	}
+
+	isStereo := e.channels == 2
+	config := configForSampleRateAndDuration(e.sampleRate, e.frameDuration)
+
+	if len(payload1) == len(payload2) {
+		// Frame code 1: two equal-size frames
+		// Packet: [TOC][Frame1][Frame2]
+		toc := newTOCHeader(config, isStereo, frameCodeTwoEqualFrames)
+		result := make([]byte, 1+len(payload1)+len(payload2))
+		result[0] = byte(toc)
+		copy(result[1:], payload1)
+		copy(result[1+len(payload1):], payload2)
+		return result, nil
+	}
+
+	// Frame code 2: two different-size frames
+	// Packet: [TOC][length1][Frame1][Frame2]
+	toc := newTOCHeader(config, isStereo, frameCodeTwoDifferentFrames)
+	lenBytes := encodeFrameLength(len(payload1))
+	result := make([]byte, 1+len(lenBytes)+len(payload1)+len(payload2))
+	result[0] = byte(toc)
+	copy(result[1:], lenBytes)
+	copy(result[1+len(lenBytes):], payload1)
+	copy(result[1+len(lenBytes)+len(payload1):], payload2)
+	return result, nil
+}
+
+// EncodeMultipleFrames encodes multiple audio frames into a single Opus packet
+// using frame code 3 (arbitrary number of frames, VBR mode).
+//
+// Each frame must be exactly the encoder's frame size. Returns an error if
+// any frame has the wrong size or if more than 48 frames are provided.
+//
+// This is useful for bundling multiple short frames into a single packet,
+// reducing per-packet overhead for low-latency streaming.
+func (e *Encoder) EncodeMultipleFrames(frames [][]int16) ([]byte, error) {
+	if len(frames) == 0 {
+		return nil, fmt.Errorf("magnum: no frames provided")
+	}
+	if len(frames) > 48 {
+		// Max 120ms per packet with 2.5ms frames = 48 frames
+		return nil, fmt.Errorf("magnum: too many frames (%d), max 48", len(frames))
+	}
+
+	expectedSize := e.buffer.frameSize
+	for i, frame := range frames {
+		if len(frame) != expectedSize {
+			return nil, fmt.Errorf("magnum: frame %d has %d samples, want %d", i, len(frame), expectedSize)
+		}
+	}
+
+	// Encode all frames
+	payloads := make([][]byte, len(frames))
+	allSilence := true
+	for i, frame := range frames {
+		payload, err := e.encodeFramePayload(frame)
+		if err != nil {
+			return nil, fmt.Errorf("magnum: encode frame %d: %w", i, err)
+		}
+		if payload == nil {
+			// DTX suppressed - encode as silence
+			payload = e.encodeSilencePayload()
+		} else {
+			allSilence = false
+		}
+		payloads[i] = payload
+	}
+
+	// If all frames are silence, suppress the entire packet
+	if allSilence && e.dtx != nil && e.dtx.IsEnabled() {
+		return nil, nil
+	}
+
+	// Build frame code 3 packet
+	// Format: [TOC][M byte][len1][frame1][len2][frame2]...[lenM-1][frameM-1][frameM]
+	// M byte: bits 2-7 = frame count, bit 1 = padding (0), bit 0 = VBR (1)
+	isStereo := e.channels == 2
+	config := configForSampleRateAndDuration(e.sampleRate, e.frameDuration)
+	toc := newTOCHeader(config, isStereo, frameCodeArbitraryFrames)
+
+	// M byte: frame count (shifted left 2) | padding=0 | VBR=1
+	mByte := byte(len(frames)<<2) | 0x01 // VBR mode, no padding
+
+	// Calculate total size
+	totalSize := 2 // TOC + M byte
+	for i := 0; i < len(payloads)-1; i++ {
+		totalSize += len(encodeFrameLength(len(payloads[i])))
+		totalSize += len(payloads[i])
+	}
+	totalSize += len(payloads[len(payloads)-1]) // Last frame (no length prefix)
+
+	result := make([]byte, totalSize)
+	result[0] = byte(toc)
+	result[1] = mByte
+
+	offset := 2
+	for i := 0; i < len(payloads)-1; i++ {
+		lenBytes := encodeFrameLength(len(payloads[i]))
+		copy(result[offset:], lenBytes)
+		offset += len(lenBytes)
+		copy(result[offset:], payloads[i])
+		offset += len(payloads[i])
+	}
+	// Last frame (no length prefix)
+	copy(result[offset:], payloads[len(payloads)-1])
+
+	return result, nil
+}
+
+// encodeFramePayload encodes a frame and returns just the payload (no TOC).
+// Returns nil if DTX suppresses the frame.
+func (e *Encoder) encodeFramePayload(frame []int16) ([]byte, error) {
+	// Check DTX
+	if e.dtx != nil && e.dtx.IsEnabled() {
+		decision := e.dtx.ProcessInt16(frame)
+		if !decision.Transmit {
+			return nil, nil // DTX-suppressed
+		}
+	}
+
+	// Use SILK when enabled
+	if e.useSILK && e.silkEncoder != nil {
+		return e.encodeSILKPayload(frame)
+	}
+
+	// Use CELT when enabled
+	if e.useCELT && e.celtEncoder != nil {
+		return e.encodeCELTPayload(frame)
+	}
+
+	// Default: flate compression
+	return e.encodeFlatePayload(frame)
+}
+
+// encodeSILKPayload encodes a frame using SILK and returns just the payload.
+func (e *Encoder) encodeSILKPayload(frame []int16) ([]byte, error) {
+	samplesPerChannel := len(frame) / e.channels
+	floatSamples := make([]float64, samplesPerChannel)
+
+	if e.channels == 1 {
+		for i, s := range frame {
+			floatSamples[i] = float64(s) / 32768.0
+		}
+	} else {
+		for i := 0; i < samplesPerChannel; i++ {
+			left := float64(frame[i*2]) / 32768.0
+			right := float64(frame[i*2+1]) / 32768.0
+			floatSamples[i] = (left + right) / 2.0
+		}
+	}
+
+	silkFrame, err := e.silkEncoder.EncodeFrame(floatSamples)
+	if err != nil {
+		return nil, err
+	}
+	return silkFrame.Data, nil
+}
+
+// encodeCELTPayload encodes a frame using CELT and returns just the payload.
+func (e *Encoder) encodeCELTPayload(frame []int16) ([]byte, error) {
+	samplesPerChannel := len(frame) / e.channels
+	floatSamples := make([]float64, samplesPerChannel)
+
+	if e.channels == 1 {
+		for i, s := range frame {
+			floatSamples[i] = float64(s) / 32768.0
+		}
+	} else {
+		for i := 0; i < samplesPerChannel; i++ {
+			left := float64(frame[i*2]) / 32768.0
+			right := float64(frame[i*2+1]) / 32768.0
+			floatSamples[i] = (left + right) / 2.0
+		}
+	}
+
+	e.celtEncoder.config.Bitrate = e.bitrate
+	celtFrame, err := e.celtEncoder.EncodeFrame(floatSamples)
+	if err != nil {
+		return nil, err
+	}
+	return celtFrame.Data, nil
+}
+
+// encodeFlatePayload encodes a frame using flate and returns just the payload.
+func (e *Encoder) encodeFlatePayload(frame []int16) ([]byte, error) {
+	for i, sample := range frame {
+		binary.LittleEndian.PutUint16(e.rawPCM[i*2:], uint16(sample))
+	}
+
+	e.outputBuf.Reset()
+	e.flateW.Reset(&e.outputBuf)
+	if _, err := e.flateW.Write(e.rawPCM[:len(frame)*2]); err != nil {
+		return nil, err
+	}
+	if err := e.flateW.Close(); err != nil {
+		return nil, err
+	}
+
+	result := make([]byte, e.outputBuf.Len())
+	copy(result, e.outputBuf.Bytes())
+	return result, nil
+}
+
+// encodeSilencePayload returns a minimal encoded silence payload.
+func (e *Encoder) encodeSilencePayload() []byte {
+	// Generate silence samples and encode
+	silence := make([]int16, e.buffer.frameSize)
+	payload, _ := e.encodeFlatePayload(silence)
+	return payload
+}
+
+// encodeFrameLength encodes a frame length using the Opus variable-length
+// encoding (RFC 6716 §3.2.1):
+//   - Length <= 251: single byte
+//   - Length >= 252: two bytes where length = first_byte + second_byte*4
+//     with first_byte in [252, 255]
+func encodeFrameLength(length int) []byte {
+	if length <= 251 {
+		return []byte{byte(length)}
+	}
+	// Two-byte encoding: length = first_byte + second_byte*4
+	// first_byte must be in [252, 255], so we use first_byte = 252 + (length % 4)
+	// But wait - we need length >= 252 and first_byte >= 252
+	// So: length = first_byte + second_byte*4
+	// Rearranging: second_byte = (length - first_byte) / 4
+	// We want first_byte to be 252 + (length-252)%4 so that division is exact
+	firstByte := 252 + (length-252)%4
+	secondByte := (length - firstByte) / 4
+	return []byte{byte(firstByte), byte(secondByte)}
+}
+
+// decodeFrameLength decodes a frame length from the Opus variable-length format.
+// Returns the length and the number of bytes consumed.
+func decodeFrameLength(data []byte) (length, consumed int) {
+	if len(data) == 0 {
+		return 0, 0
+	}
+	if data[0] <= 251 {
+		return int(data[0]), 1
+	}
+	if len(data) < 2 {
+		return 0, 0
+	}
+	// Two-byte encoding: length = first_byte + second_byte*4
+	length = int(data[0]) + int(data[1])*4
+	return length, 2
 }
