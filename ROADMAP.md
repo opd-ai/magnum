@@ -44,7 +44,7 @@ foundational bit-level I/O layer used by both SILK and CELT.
   fixed-length fields that bypass the probability model.
 - [x] Unit-test encoder/decoder round-trips for a range of symbol
   distributions and input lengths.
-- [ ] Verify bit-exact output against the reference C implementation
+- [x] Verify bit-exact output against the reference C implementation
   (`opus/celt/entenc.c`, `entdec.c`) for a shared set of test vectors.
 
 ### Success criteria

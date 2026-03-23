@@ -35,8 +35,12 @@ type Decoder struct {
 // Supported sample rates: 8000, 16000, 24000, 48000 Hz.
 // Supported channel counts: 1 (mono) or 2 (stereo).
 //
-// The sample rate and channels are stored for future validation but are not
-// currently used to verify incoming packets.
+// Design note: Unlike pion/opus (which uses a parameterless constructor), magnum
+// requires sample rate and channels upfront. This "configuration-first" model
+// enables early validation of incoming packets against expected parameters,
+// catching mismatches (e.g., decoding a stereo packet with a mono decoder)
+// as explicit errors rather than silent data corruption. This design choice
+// prioritizes safety and explicit error handling over API similarity.
 func NewDecoder(sampleRate, channels int) (*Decoder, error) {
 	if !isValidSampleRate(sampleRate) {
 		return nil, ErrUnsupportedSampleRate
@@ -56,9 +60,13 @@ func NewDecoder(sampleRate, channels int) (*Decoder, error) {
 // frame at 48 kHz mono, this is 960 samples; for stereo, 1920 samples.
 //
 // Returns the number of samples decoded. If out is provided and large enough,
-// samples are copied into out. If out is nil or too small, the decoded samples
-// are returned via the out return value (callers should use DecodeAlloc for
-// this use case).
+// samples are copied into out and no additional allocation occurs for the sample
+// data. If out is nil or too small, the decoded samples are still available but
+// callers should use [DecodeAlloc] for that use case.
+//
+// Performance note: To avoid per-packet allocations, reuse the out slice across
+// calls. The internal decompression still allocates, but the sample slice copy
+// is avoided when out is sufficiently sized.
 //
 // The Decoder validates that the packet's channel configuration and sample rate
 // match the decoder's settings. Returns [ErrChannelMismatch] if the packet's

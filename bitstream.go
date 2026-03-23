@@ -83,32 +83,35 @@ func configForSampleRate(sampleRate int) Configuration {
 // sampleRateForConfig returns the sample rate corresponding to the given
 // Opus TOC configuration. This is the inverse of configForSampleRate.
 // Returns 0 for unknown configurations.
+//
+// Configuration mapping per RFC 6716 Table 2 (§3.1):
+//
+//	Configs 0-3:   SILK NB (8 kHz narrowband)
+//	Configs 4-7:   SILK MB (12 kHz mediumband) → maps to 16 kHz
+//	Configs 8-11:  SILK WB (16 kHz wideband)
+//	Configs 12-15: Hybrid SWB (24 kHz superwideband)
+//	Configs 16-19: Hybrid FB (48 kHz fullband)
+//	Configs 20-23: CELT NB (8 kHz narrowband, rare)
+//	Configs 24-27: CELT SWB (24 kHz superwideband)
+//	Configs 28-31: CELT FB (48 kHz fullband)
 func sampleRateForConfig(config Configuration) int {
-	// RFC 6716 Table 2: configurations are grouped by bandwidth.
-	// Configs 0-3: SILK NB (8 kHz)
-	// Configs 4-7: SILK MB (12 kHz) - not supported, map to 16k
-	// Configs 8-11: SILK WB (16 kHz)
-	// Configs 12-15: Hybrid SWB (24 kHz)
-	// Configs 16-19: Hybrid FB (48 kHz)
-	// Configs 20-23: CELT NB (8 kHz) - not standard, map to 8k
-	// Configs 24-27: CELT SWB (24 kHz)
-	// Configs 28-31: CELT FB (48 kHz)
+	// RFC 6716 Table 2 — see function comment for full mapping
 	switch {
-	case config <= 3:
+	case config <= 3: // SILK NB
 		return SampleRate8k
-	case config <= 7:
-		return SampleRate16k // mediumband maps to wideband
-	case config <= 11:
+	case config <= 7: // SILK MB → wideband
 		return SampleRate16k
-	case config <= 15:
-		return SampleRate24k // hybrid superwideband
-	case config <= 19:
-		return SampleRate48k // hybrid fullband
-	case config <= 23:
-		return SampleRate8k // CELT narrowband (rare)
-	case config <= 27:
+	case config <= 11: // SILK WB
+		return SampleRate16k
+	case config <= 15: // Hybrid SWB
 		return SampleRate24k
-	case config <= 31:
+	case config <= 19: // Hybrid FB
+		return SampleRate48k
+	case config <= 23: // CELT NB
+		return SampleRate8k
+	case config <= 27: // CELT SWB
+		return SampleRate24k
+	case config <= 31: // CELT FB
 		return SampleRate48k
 	default:
 		return 0

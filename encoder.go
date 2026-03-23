@@ -7,6 +7,52 @@ import (
 	"fmt"
 )
 
+// Application represents the encoder application mode.
+// It hints the encoder about the intended use case for optimization.
+// This follows the pion/opus API pattern.
+type Application int
+
+const (
+	// ApplicationVoIP optimizes for voice over IP, prioritizing low latency
+	// and speech intelligibility. This mode enables features like DTX
+	// (discontinuous transmission) and is optimized for speech.
+	ApplicationVoIP Application = 2048
+
+	// ApplicationAudio optimizes for general audio, providing the best quality
+	// for music and other non-speech audio. This is the default mode.
+	ApplicationAudio Application = 2049
+
+	// ApplicationLowDelay provides the lowest possible latency at the expense
+	// of some quality. Useful for real-time applications like live instruments.
+	ApplicationLowDelay Application = 2051
+)
+
+// Bandwidth represents the encoder bandwidth setting.
+// It controls the maximum audio bandwidth that will be encoded.
+// This follows the pion/opus API pattern.
+type Bandwidth int
+
+const (
+	// BandwidthNarrowband limits audio to 4 kHz bandwidth (8 kHz sample rate).
+	BandwidthNarrowband Bandwidth = 1101
+
+	// BandwidthMediumband limits audio to 6 kHz bandwidth (12 kHz sample rate).
+	BandwidthMediumband Bandwidth = 1102
+
+	// BandwidthWideband limits audio to 8 kHz bandwidth (16 kHz sample rate).
+	BandwidthWideband Bandwidth = 1103
+
+	// BandwidthSuperwideband limits audio to 12 kHz bandwidth (24 kHz sample rate).
+	BandwidthSuperwideband Bandwidth = 1104
+
+	// BandwidthFullband allows full 20 kHz bandwidth (48 kHz sample rate).
+	BandwidthFullband Bandwidth = 1105
+
+	// BandwidthAuto lets the encoder automatically select bandwidth based on
+	// the input signal and bitrate. This is the default.
+	BandwidthAuto Bandwidth = -1000
+)
+
 // Encoder is a simplified pure-Go Opus-compatible audio encoder.
 //
 // It follows the pion/opus API patterns and wraps PCM audio frames in
@@ -15,10 +61,13 @@ import (
 // interoperable with standard Opus decoders. Use the [Decode] function
 // (or a matching magnum decoder) to recover the original PCM samples.
 type Encoder struct {
-	sampleRate int
-	channels   int
-	bitrate    int
-	buffer     *frameBuffer
+	sampleRate  int
+	channels    int
+	bitrate     int
+	application Application
+	complexity  int       // 0-10, default 10
+	bandwidth   Bandwidth // default BandwidthAuto
+	buffer      *frameBuffer
 
 	// Reusable buffers to reduce allocations.
 	rawPCM    []byte        // pre-allocated buffer for PCM serialization
@@ -30,7 +79,24 @@ type Encoder struct {
 //
 // Supported sample rates: 8000, 16000, 24000, 48000 Hz.
 // Supported channel counts: 1 (mono) or 2 (stereo).
+//
+// This is a convenience constructor that uses [ApplicationAudio] as the default
+// application mode. For explicit control over the application mode, use
+// [NewEncoderWithApplication].
 func NewEncoder(sampleRate, channels int) (*Encoder, error) {
+	return NewEncoderWithApplication(sampleRate, channels, ApplicationAudio)
+}
+
+// NewEncoderWithApplication creates a new Encoder with explicit application mode.
+//
+// Supported sample rates: 8000, 16000, 24000, 48000 Hz.
+// Supported channel counts: 1 (mono) or 2 (stereo).
+// Supported applications: [ApplicationVoIP], [ApplicationAudio], [ApplicationLowDelay].
+//
+// The application mode is stored for future codec integration (ROADMAP Milestones 2-3).
+// The current simplified implementation does not yet use it to modify encoding behavior,
+// but it will affect SILK/CELT mode selection when those codecs are implemented.
+func NewEncoderWithApplication(sampleRate, channels int, app Application) (*Encoder, error) {
 	if !isValidSampleRate(sampleRate) {
 		return nil, ErrUnsupportedSampleRate
 	}
@@ -51,14 +117,22 @@ func NewEncoder(sampleRate, channels int) (*Encoder, error) {
 	}
 
 	return &Encoder{
-		sampleRate: sampleRate,
-		channels:   channels,
-		bitrate:    64000, // default: 64 kbps
-		buffer:     fb,
-		rawPCM:     rawPCM,
-		outputBuf:  outputBuf,
-		flateW:     flateW,
+		sampleRate:  sampleRate,
+		channels:    channels,
+		bitrate:     64000, // default: 64 kbps
+		application: app,
+		complexity:  10,             // default: highest quality
+		bandwidth:   BandwidthAuto,  // default: automatic
+		buffer:      fb,
+		rawPCM:      rawPCM,
+		outputBuf:   outputBuf,
+		flateW:      flateW,
 	}, nil
+}
+
+// Application returns the application mode configured for this encoder.
+func (e *Encoder) Application() Application {
+	return e.application
 }
 
 // SetBitrate sets the target encoding bitrate in bits per second.
@@ -81,6 +155,42 @@ func (e *Encoder) SetBitrate(bitrate int) {
 	default:
 		e.bitrate = bitrate
 	}
+}
+
+// SetComplexity sets the encoder complexity level (0-10).
+// Higher values provide better quality at the expense of CPU usage.
+// Values outside the range are clamped to 0-10.
+//
+// NOTE: complexity is stored for future codec integration (ROADMAP Milestones 2-3);
+// the current flate-based compression does not use it.
+func (e *Encoder) SetComplexity(complexity int) {
+	switch {
+	case complexity < 0:
+		e.complexity = 0
+	case complexity > 10:
+		e.complexity = 10
+	default:
+		e.complexity = complexity
+	}
+}
+
+// Complexity returns the complexity level configured for this encoder.
+func (e *Encoder) Complexity() int {
+	return e.complexity
+}
+
+// SetBandwidth sets the maximum audio bandwidth for encoding.
+// Use [BandwidthAuto] to let the encoder automatically select.
+//
+// NOTE: bandwidth is stored for future codec integration (ROADMAP Milestones 2-3);
+// the current flate-based compression does not use it.
+func (e *Encoder) SetBandwidth(bandwidth Bandwidth) {
+	e.bandwidth = bandwidth
+}
+
+// Bandwidth returns the bandwidth setting configured for this encoder.
+func (e *Encoder) Bandwidth() Bandwidth {
+	return e.bandwidth
 }
 
 // Encode encodes signed 16-bit interleaved PCM samples into an Opus packet.

@@ -91,10 +91,16 @@ Frame sizes for other sample rates:
 
 | Symbol | Description |
 |---|---|
-| `NewEncoder(sampleRate, channels int) (*Encoder, error)` | Create an encoder. Supported rates: 8000, 16000, 24000, 48000 Hz. Channels: 1 or 2. |
+| `Application` | Type representing encoder application mode (VoIP, Audio, LowDelay). |
+| `ApplicationVoIP` | Optimizes for voice over IP (low latency, speech). Value: 2048. |
+| `ApplicationAudio` | Optimizes for general audio (best quality). Value: 2049. Default. |
+| `ApplicationLowDelay` | Lowest possible latency. Value: 2051. |
+| `NewEncoder(sampleRate, channels int) (*Encoder, error)` | Create an encoder with default `ApplicationAudio`. Supported rates: 8000, 16000, 24000, 48000 Hz. Channels: 1 or 2. |
+| `NewEncoderWithApplication(sampleRate, channels int, app Application) (*Encoder, error)` | Create an encoder with explicit application mode. Follows pion/opus API pattern. |
 | `(*Encoder).Encode(pcm []int16) ([]byte, error)` | Encode one 20 ms frame. Buffers input; returns `nil` until a complete frame is ready. Pass `nil` to drain buffered frames. |
 | `(*Encoder).Flush() ([]byte, error)` | Flush any remaining buffered samples as a zero-padded final frame. |
-| `(*Encoder).SetBitrate(bitrate int)` | Set target bitrate (bps, clamped to 6000–510000). Note: stored but not yet used. |
+| `(*Encoder).SetBitrate(bitrate int)` | Set target bitrate (bps, clamped to 6000–510000). Stored for future CELT/SILK integration; currently unused. |
+| `(*Encoder).Application() Application` | Returns the application mode configured for this encoder. |
 
 ### Decoder
 
