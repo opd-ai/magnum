@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/flate"
 	"encoding/binary"
+	"fmt"
 	"io"
 )
 
@@ -93,7 +94,7 @@ func (d *Decoder) Decode(packet []byte, out []int16) (int, error) {
 	// Reuse the decoder's internal buffers and flate reader for decompression.
 	raw, stereo, config, err := decodePayloadWithReader(packet, d.rawBuffer, d.readChunk, d.flateR)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("magnum: decode: %w", err)
 	}
 	// Update rawBuffer to retain capacity for next decode.
 	d.rawBuffer = raw[:0]
@@ -104,13 +105,13 @@ func (d *Decoder) Decode(packet []byte, out []int16) (int, error) {
 		packetChannels = 2
 	}
 	if packetChannels != d.channels {
-		return 0, ErrChannelMismatch
+		return 0, fmt.Errorf("magnum: decode: %w", ErrChannelMismatch)
 	}
 
 	// Validate sample rate configuration.
 	packetSampleRate := sampleRateForConfig(config)
 	if packetSampleRate != d.sampleRate {
-		return 0, ErrSampleRateMismatch
+		return 0, fmt.Errorf("magnum: decode: %w", ErrSampleRateMismatch)
 	}
 
 	// Convert raw bytes to int16 samples.
@@ -146,7 +147,7 @@ func (d *Decoder) DecodeAlloc(packet []byte) ([]int16, error) {
 	// Reuse the decoder's internal buffers and flate reader for decompression.
 	raw, stereo, config, err := decodePayloadWithReader(packet, d.rawBuffer, d.readChunk, d.flateR)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("magnum: decode: %w", err)
 	}
 	// Update rawBuffer to retain capacity for next decode.
 	d.rawBuffer = raw[:0]
@@ -157,13 +158,13 @@ func (d *Decoder) DecodeAlloc(packet []byte) ([]int16, error) {
 		packetChannels = 2
 	}
 	if packetChannels != d.channels {
-		return nil, ErrChannelMismatch
+		return nil, fmt.Errorf("magnum: decode: %w", ErrChannelMismatch)
 	}
 
 	// Validate sample rate configuration.
 	packetSampleRate := sampleRateForConfig(config)
 	if packetSampleRate != d.sampleRate {
-		return nil, ErrSampleRateMismatch
+		return nil, fmt.Errorf("magnum: decode: %w", ErrSampleRateMismatch)
 	}
 
 	// Convert raw bytes to int16 samples.

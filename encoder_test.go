@@ -541,6 +541,74 @@ func TestFrameBufferFlush(t *testing.T) {
 	}
 }
 
+// TestFrameBufferQueueLimit verifies that the frame buffer respects the
+// maxQueueDepth limit when configured.
+func TestFrameBufferQueueLimit(t *testing.T) {
+	t.Parallel()
+
+	// Create a frame buffer with a limited queue depth.
+	frameSize := 48000 * 20 / 1000 * 1 // 960 samples per frame at 48kHz mono
+	fb := &frameBuffer{
+		samples:       make([]int16, 0, frameSize),
+		ready:         make([][]int16, 0, 4),
+		frameSize:     frameSize,
+		maxQueueDepth: 3, // Only allow 3 frames in queue
+	}
+
+	// Write first 3 frames - should succeed.
+	pcm := make([]int16, frameSize*3)
+	for i := range pcm {
+		pcm[i] = int16(i % 1000)
+	}
+	if err := fb.write(pcm); err != nil {
+		t.Fatalf("first write should succeed: %v", err)
+	}
+	if len(fb.ready) != 3 {
+		t.Errorf("expected 3 ready frames, got %d", len(fb.ready))
+	}
+
+	// Try to write one more frame - should fail.
+	oneFrame := make([]int16, frameSize)
+	if err := fb.write(oneFrame); err != ErrFrameQueueFull {
+		t.Errorf("expected ErrFrameQueueFull, got: %v", err)
+	}
+
+	// Consume one frame.
+	if frame := fb.next(); frame == nil {
+		t.Error("expected a frame from next()")
+	}
+
+	// Now writing should succeed again.
+	if err := fb.write(oneFrame); err != nil {
+		t.Fatalf("write after consuming should succeed: %v", err)
+	}
+	if len(fb.ready) != 3 {
+		t.Errorf("expected 3 ready frames after write, got %d", len(fb.ready))
+	}
+}
+
+// TestFrameBufferUnboundedDefault verifies that the default frame buffer
+// is unbounded (backward compatibility).
+func TestFrameBufferUnboundedDefault(t *testing.T) {
+	t.Parallel()
+
+	fb := newFrameBuffer(48000, 1)
+
+	// Write many frames without consuming - should not error.
+	// 100 frames = ~2 seconds of audio at 20ms per frame.
+	frameSize := 48000 * 20 / 1000 // 960 samples
+	pcm := make([]int16, frameSize*100)
+	for i := range pcm {
+		pcm[i] = int16(i % 1000)
+	}
+	if err := fb.write(pcm); err != nil {
+		t.Fatalf("unbounded write should not fail: %v", err)
+	}
+	if len(fb.ready) != 100 {
+		t.Errorf("expected 100 ready frames, got %d", len(fb.ready))
+	}
+}
+
 // BenchmarkEncode48kMono measures encoding performance for 48 kHz mono audio.
 func BenchmarkEncode48kMono(b *testing.B) {
 	enc, err := NewEncoder(48000, 1)

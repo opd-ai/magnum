@@ -65,6 +65,42 @@ const (
 	ConfigurationCELTFB20ms Configuration = 31
 )
 
+// Configuration range boundaries per RFC 6716 Table 2.
+// These constants define the upper bound (inclusive) for each codec/bandwidth group.
+const (
+	// configSILKNBMax is the maximum configuration for SILK narrowband (8 kHz).
+	// Configurations 0–3 are SILK NB with frame durations 10, 20, 40, 60 ms.
+	configSILKNBMax Configuration = 3
+
+	// configSILKMBMax is the maximum configuration for SILK mediumband (12 kHz).
+	// Configurations 4–7 are SILK MB with frame durations 10, 20, 40, 60 ms.
+	configSILKMBMax Configuration = 7
+
+	// configSILKWBMax is the maximum configuration for SILK wideband (16 kHz).
+	// Configurations 8–11 are SILK WB with frame durations 10, 20, 40, 60 ms.
+	configSILKWBMax Configuration = 11
+
+	// configHybridSWBMax is the maximum configuration for Hybrid superwideband (24 kHz).
+	// Configurations 12–15 are Hybrid SWB with frame durations 10, 20 ms.
+	configHybridSWBMax Configuration = 15
+
+	// configHybridFBMax is the maximum configuration for Hybrid fullband (48 kHz).
+	// Configurations 16–19 are Hybrid FB with frame durations 10, 20 ms.
+	configHybridFBMax Configuration = 19
+
+	// configCELTNBMax is the maximum configuration for CELT narrowband (8 kHz).
+	// Configurations 20–23 are CELT NB with frame durations 2.5, 5, 10, 20 ms.
+	configCELTNBMax Configuration = 23
+
+	// configCELTSWBMax is the maximum configuration for CELT superwideband (24 kHz).
+	// Configurations 24–27 are CELT SWB with frame durations 2.5, 5, 10, 20 ms.
+	configCELTSWBMax Configuration = 27
+
+	// configCELTFBMax is the maximum configuration for CELT fullband (48 kHz).
+	// Configurations 28–31 are CELT FB with frame durations 2.5, 5, 10, 20 ms.
+	configCELTFBMax Configuration = 31
+)
+
 // configForSampleRate returns the Opus TOC configuration that best describes
 // a 20 ms frame at the given sample rate. Values follow RFC 6716 Table 2.
 func configForSampleRate(sampleRate int) Configuration {
@@ -95,23 +131,23 @@ func configForSampleRate(sampleRate int) Configuration {
 //	Configs 24-27: CELT SWB (24 kHz superwideband)
 //	Configs 28-31: CELT FB (48 kHz fullband)
 func sampleRateForConfig(config Configuration) int {
-	// RFC 6716 Table 2 — see function comment for full mapping
+	// RFC 6716 Table 2 — use named constants for configuration boundaries.
 	switch {
-	case config <= 3: // SILK NB
+	case config <= configSILKNBMax: // SILK NB (0–3)
 		return SampleRate8k
-	case config <= 7: // SILK MB → wideband
+	case config <= configSILKMBMax: // SILK MB (4–7) → wideband
 		return SampleRate16k
-	case config <= 11: // SILK WB
+	case config <= configSILKWBMax: // SILK WB (8–11)
 		return SampleRate16k
-	case config <= 15: // Hybrid SWB
+	case config <= configHybridSWBMax: // Hybrid SWB (12–15)
 		return SampleRate24k
-	case config <= 19: // Hybrid FB
+	case config <= configHybridFBMax: // Hybrid FB (16–19)
 		return SampleRate48k
-	case config <= 23: // CELT NB
+	case config <= configCELTNBMax: // CELT NB (20–23)
 		return SampleRate8k
-	case config <= 27: // CELT SWB
+	case config <= configCELTSWBMax: // CELT SWB (24–27)
 		return SampleRate24k
-	case config <= 31: // CELT FB
+	case config <= configCELTFBMax: // CELT FB (28–31)
 		return SampleRate48k
 	default:
 		return 0

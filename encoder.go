@@ -206,7 +206,9 @@ func (e *Encoder) Bandwidth() Bandwidth {
 // supplying new data.
 func (e *Encoder) Encode(pcm []int16) ([]byte, error) {
 	if len(pcm) > 0 {
-		e.buffer.write(pcm)
+		if err := e.buffer.write(pcm); err != nil {
+			return nil, fmt.Errorf("magnum: encode: %w", err)
+		}
 	}
 	frame := e.buffer.next()
 	if frame == nil {
