@@ -30,3 +30,12 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Analysis and report files
+*.json
+!package.json
+!*.config.json
+
+# Development loop artifacts
+loop.log
+*.log
