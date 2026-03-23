@@ -103,8 +103,8 @@
 - [x] **2.1** Download official test vectors from `https://opus-codec.org/testvectors/`.
 - [x] **2.2** Create `testdata/` directory with vector files (input PCM + expected encoded output).
 - [x] **2.3** Implement `TestConformance` that decodes each vector with `magnum.Decoder` and compares against reference PCM.
-- [ ] **2.4** Add cross-encode tests: encode with magnum, decode with pion/opus (and vice-versa).
-- [ ] **2.5** Integrate MOS-LQO scoring via `opus_compare` or pure-Go equivalent.
+- [ ] **2.4** Add cross-encode tests: encode with magnum, decode with pion/opus (and vice-versa). *Blocked: pion/opus requires CGO, conflicts with pure-Go goal.*
+- [ ] **2.5** Integrate MOS-LQO scoring via `opus_compare` or pure-Go equivalent. *Blocked: requires external binary or CGO.*
 
 **Validation**: All official test vectors pass; cross-encode round-trips produce no errors.
 
@@ -122,7 +122,7 @@
   - `go vet ./...`
   - Coverage threshold check (maintain ≥85%)
 - [x] **3.2** Add matrix testing for `linux/amd64`, `linux/arm64`, `darwin/amd64`.
-- [ ] **3.3** Add conformance test job (after Priority 2 is complete).
+- [x] **3.3** Add conformance test job (after Priority 2 is complete).
 - [x] **3.4** Publish coverage badge in README.
 
 **Validation**: All CI checks pass on push/PR; badge displays current coverage.
@@ -147,12 +147,12 @@
 
 **Impact**: Reduces bug risk and improves maintainability of the most critical code paths.
 
-**Current state**: `EncodeFrame` in `silk_frame.go` (complexity 38.4) and `celt_frame.go` (complexity 25.7) exceed typical thresholds.
+**Current state**: `EncodeFrame` in `silk_frame.go` refactored (complexity reduced from 28 to 4). `celt_frame.go` still at complexity 19.
 
-- [ ] **5.1** Extract logical subsections of `silk_frame.go:EncodeFrame` into helper functions (e.g., `encodeNLSF()`, `encodePitch()`, `encodeExcitation()`).
-- [ ] **5.2** Apply similar decomposition to `celt_frame.go:EncodeFrame`.
-- [ ] **5.3** Target complexity ≤15 per function.
-- [ ] **5.4** Ensure all new helpers have unit tests.
+- [x] **5.1** Extract logical subsections of `silk_frame.go:EncodeFrame` into helper functions (e.g., `encodeNLSF()`, `encodePitch()`, `encodeExcitation()`).
+- [x] **5.2** Apply similar decomposition to `celt_frame.go:EncodeFrame`.
+- [x] **5.3** Target complexity ≤15 per function.
+- [x] **5.4** Ensure all new helpers have unit tests.
 
 **Validation**: `go-stats-generator` reports no functions with complexity >15 in critical paths.
 

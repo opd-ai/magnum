@@ -109,145 +109,152 @@ func (enc *CELTFrameEncoder) EncodeFrame(samples []float64) (*CELTEncodedFrame, 
 		return nil, ErrInvalidFrameSize
 	}
 
-	// Detect silence
+	// Detect silence and encode silence frame if applicable
 	energy := computeFrameEnergy(samples)
 	isSilence := energy < 1e-10
 
-	// Initialize range encoder
 	rc := NewRangeEncoder()
-
-	// Encode silence flag (1 bit)
-	silenceFlag := 0
 	if isSilence {
-		silenceFlag = 1
+		rc.EncodeBits(1, 1)
+		return &CELTEncodedFrame{Data: rc.Bytes(), Bits: 1, IsSilence: true}, nil
 	}
-	rc.EncodeBits(uint32(silenceFlag), 1)
+	rc.EncodeBits(0, 1)
 
-	if isSilence {
-		// Silence frame: just return the silence flag
-		return &CELTEncodedFrame{
-			Data:      rc.Bytes(),
-			Bits:      1,
-			IsSilence: true,
-		}, nil
-	}
-
-	// Compute MDCT
+	// Compute spectral representation
 	mdctCoeffs := enc.mdct.Forward(samples)
-
-	// Compute band energies
 	bandEnergy := ComputeBandEnergy(mdctCoeffs)
-
-	// Detect transients
 	isTransient := detectTransient(samples, enc.prevMDCT)
 
-	// Encode transient flag
+	// Encode frame flags
+	isIntra := enc.encodeFrameFlags(rc, isTransient)
+
+	// Quantize and encode energy
+	quantizedEnergy := enc.encodeCoarseEnergy(rc, bandEnergy, isIntra)
+
+	// Encode TF and spreading
+	enc.encodeTFAndSpreading(rc, bandEnergy, mdctCoeffs)
+
+	// Encode spectral coefficients with PVQ
+	enc.encodePVQBands(rc, mdctCoeffs, bandEnergy)
+
+	// Encode fine energy
+	enc.encodeFineEnergy(rc, quantizedEnergy)
+
+	// Update state for next frame
+	copy(enc.prevMDCT, mdctCoeffs)
+	enc.frameCount++
+
+	return &CELTEncodedFrame{
+		Data:        rc.Bytes(),
+		Bits:        computeUsedBits(rc),
+		IsTransient: isTransient,
+	}, nil
+}
+
+// encodeFrameFlags encodes transient and intra flags.
+func (enc *CELTFrameEncoder) encodeFrameFlags(rc *RangeEncoder, isTransient bool) bool {
 	transientFlag := 0
 	if isTransient {
 		transientFlag = 1
 	}
 	rc.EncodeBits(uint32(transientFlag), 1)
 
-	// Determine if this is an intra frame (no prediction)
-	isIntra := enc.frameCount%10 == 0 // Periodic intra frames
+	isIntra := enc.frameCount%10 == 0
 	intraFlag := 0
 	if isIntra {
 		intraFlag = 1
 	}
 	rc.EncodeBits(uint32(intraFlag), 1)
+	return isIntra
+}
 
-	// Quantize coarse energy
+// encodeCoarseEnergy quantizes and encodes coarse band energies.
+func (enc *CELTFrameEncoder) encodeCoarseEnergy(rc *RangeEncoder, bandEnergy *BandEnergy, isIntra bool) *QuantizedEnergy {
 	quantizedEnergy := enc.eq.QuantizeCoarse(bandEnergy.LogEnergy, isIntra)
 
-	// Encode coarse energy using range coder
 	for i := 0; i < NumCELTBands; i++ {
-		// Encode quantized energy as signed value
 		val := quantizedEnergy.CoarseQuant[i]
-		// Convert to positive range for encoding
-		encoded := val + 64 // Offset to make positive (range -64 to +63)
+		encoded := val + 64
 		if encoded < 0 {
 			encoded = 0
 		}
 		if encoded > 127 {
 			encoded = 127
 		}
-		rc.EncodeBits(uint32(encoded), 7) // 7 bits covers -64 to +63
+		rc.EncodeBits(uint32(encoded), 7)
 	}
+	return quantizedEnergy
+}
 
-	// Analyze TF resolution
+// encodeTFAndSpreading encodes TF select and spreading mode.
+func (enc *CELTFrameEncoder) encodeTFAndSpreading(rc *RangeEncoder, bandEnergy *BandEnergy, mdctCoeffs []float64) {
 	tfRes := enc.tf.Analyze(bandEnergy)
+	EncodeTFSelect(rc, tfRes, false)
 
-	// Encode TF select
-	EncodeTFSelect(rc, tfRes, isTransient)
-
-	// Analyze spreading
 	spreadMode := enc.spread.Analyze(mdctCoeffs, NumCELTBands)
-
-	// Encode spreading
 	EncodeSpread(rc, spreadMode)
+}
 
-	// Get scaled band boundaries
+// encodePVQBands encodes spectral coefficients for all bands using PVQ.
+func (enc *CELTFrameEncoder) encodePVQBands(rc *RangeEncoder, mdctCoeffs []float64, bandEnergy *BandEnergy) {
 	spectrumSize := len(mdctCoeffs)
 	starts, ends := ScaledBandBoundaries(spectrumSize)
 
-	// Compute bit budget for PVQ using the CELT allocation table
 	totalBits := enc.config.Bitrate * enc.config.FrameSize / enc.config.SampleRate
 	usedBits := computeUsedBits(rc)
-	pvqBits := totalBits - usedBits - 50 // Reserve some bits for fine energy
+	pvqBits := totalBits - usedBits - 50
 	if pvqBits < 0 {
 		pvqBits = 0
 	}
 
-	// Allocate bits across bands using the bitrate-aware allocation system
 	bandBits := AllocateBandBits(pvqBits, NumCELTBands, bandEnergy,
 		enc.config.Bitrate, enc.config.SampleRate, enc.config.FrameSize)
 
-	// Normalize spectrum and encode with PVQ
 	normalizedCoeffs := normalizeSpectrum(mdctCoeffs, bandEnergy)
+	spreadMode := enc.spread.Analyze(mdctCoeffs, NumCELTBands)
 
-	// Apply spreading
 	for i := 0; i < NumCELTBands; i++ {
 		ApplySpreading(normalizedCoeffs, spreadMode, starts[i], ends[i], uint32(enc.frameCount+i))
 	}
 
-	// Encode each band with PVQ
 	for i := 0; i < NumCELTBands; i++ {
-		if !bandEnergy.Valid[i] || bandBits[i] <= 0 {
-			continue
-		}
+		enc.encodePVQBand(rc, normalizedCoeffs, bandEnergy, bandBits, starts, ends, i)
+	}
+}
 
-		n := ends[i] - starts[i]
-		if n <= 0 || starts[i] >= len(normalizedCoeffs) || ends[i] > len(normalizedCoeffs) {
-			continue
-		}
-
-		bandCoeffs := make([]float64, n)
-		copy(bandCoeffs, normalizedCoeffs[starts[i]:ends[i]])
-
-		// Determine K from bit budget
-		k := enc.pvq.SelectK(n, bandBits[i])
-		if k == 0 {
-			continue
-		}
-
-		// Encode K
-		rc.EncodeBits(uint32(k), 5) // 5 bits for K (0-31)
-
-		// Quantize with PVQ
-		cw := enc.pvq.Encode(bandCoeffs, k)
-
-		// Encode the PVQ index
-		v := enc.pvq.V(n, k)
-		if v > 1 {
-			bits := enc.pvq.BitsRequired(n, k)
-			rc.EncodeBits(uint32(cw.Index), uint32(bits))
-		}
+// encodePVQBand encodes a single band using PVQ.
+func (enc *CELTFrameEncoder) encodePVQBand(rc *RangeEncoder, normalizedCoeffs []float64, bandEnergy *BandEnergy, bandBits []int, starts, ends [NumCELTBands]int, bandIdx int) {
+	if !bandEnergy.Valid[bandIdx] || bandBits[bandIdx] <= 0 {
+		return
 	}
 
-	// Quantize fine energy for remaining bits (2 bits per band)
+	n := ends[bandIdx] - starts[bandIdx]
+	if n <= 0 || starts[bandIdx] >= len(normalizedCoeffs) || ends[bandIdx] > len(normalizedCoeffs) {
+		return
+	}
+
+	bandCoeffs := make([]float64, n)
+	copy(bandCoeffs, normalizedCoeffs[starts[bandIdx]:ends[bandIdx]])
+
+	k := enc.pvq.SelectK(n, bandBits[bandIdx])
+	if k == 0 {
+		return
+	}
+
+	rc.EncodeBits(uint32(k), 5)
+	cw := enc.pvq.Encode(bandCoeffs, k)
+
+	v := enc.pvq.V(n, k)
+	if v > 1 {
+		bits := enc.pvq.BitsRequired(n, k)
+		rc.EncodeBits(uint32(cw.Index), uint32(bits))
+	}
+}
+
+// encodeFineEnergy encodes fine energy bits.
+func (enc *CELTFrameEncoder) encodeFineEnergy(rc *RangeEncoder, quantizedEnergy *QuantizedEnergy) {
 	enc.eq.QuantizeFine(quantizedEnergy, NumCELTBands*2)
 
-	// Encode fine energy (2 bits per band)
 	for i := 0; i < NumCELTBands; i++ {
 		val := quantizedEnergy.FineQuant[i]
 		if val < 0 {
@@ -258,18 +265,6 @@ func (enc *CELTFrameEncoder) EncodeFrame(samples []float64) (*CELTEncodedFrame, 
 		}
 		rc.EncodeBits(uint32(val), 2)
 	}
-
-	// Store current MDCT for next frame overlap
-	copy(enc.prevMDCT, mdctCoeffs)
-
-	enc.frameCount++
-
-	return &CELTEncodedFrame{
-		Data:        rc.Bytes(),
-		Bits:        computeUsedBits(rc),
-		IsSilence:   false,
-		IsTransient: isTransient,
-	}, nil
 }
 
 // CELTFrameDecoder decodes CELT frames following RFC 6716 §4.3.

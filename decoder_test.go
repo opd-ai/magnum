@@ -630,3 +630,85 @@ func TestDecoderHybridDecodeAlloc(t *testing.T) {
 		t.Errorf("DecodeAlloc returned %d samples, want %d", len(out), frameSize)
 	}
 }
+
+// TestClampToInt16 tests the clampToInt16 helper function.
+func TestClampToInt16(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input float64
+		want  int16
+	}{
+		{0, 0},
+		{100, 100},
+		{-100, -100},
+		{32767, 32767},
+		{-32768, -32768},
+		{32768, 32767},   // clamped
+		{40000, 32767},   // clamped
+		{-32769, -32768}, // clamped
+		{-40000, -32768}, // clamped
+	}
+
+	for _, tt := range tests {
+		got := clampToInt16(tt.input)
+		if got != tt.want {
+			t.Errorf("clampToInt16(%f) = %d, want %d", tt.input, got, tt.want)
+		}
+	}
+}
+
+// TestConvertFloatSamplesToInt16 tests the sample conversion helper.
+func TestConvertFloatSamplesToInt16(t *testing.T) {
+	t.Parallel()
+
+	dec, err := NewDecoder(48000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Test mono conversion
+	floatSamples := []float64{0.0, 0.5, -0.5, 1.0, -1.0}
+	out := make([]int16, 5)
+	n := dec.convertFloatSamplesToInt16(floatSamples, out)
+
+	if n != 5 {
+		t.Errorf("convertFloatSamplesToInt16 returned %d samples, want 5", n)
+	}
+
+	// Check values
+	expected := []int16{0, 16383, -16383, 32767, -32767}
+	for i, want := range expected {
+		// Allow small rounding tolerance
+		diff := int(out[i]) - int(want)
+		if diff < -1 || diff > 1 {
+			t.Errorf("sample %d: got %d, want ~%d", i, out[i], want)
+		}
+	}
+}
+
+// TestConvertFloatSamplesToInt16Stereo tests stereo sample conversion.
+func TestConvertFloatSamplesToInt16Stereo(t *testing.T) {
+	t.Parallel()
+
+	dec, err := NewDecoder(48000, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	floatSamples := []float64{0.5, -0.5}
+	out := make([]int16, 4) // stereo doubles output
+	n := dec.convertFloatSamplesToInt16(floatSamples, out)
+
+	if n != 4 {
+		t.Errorf("convertFloatSamplesToInt16 returned %d samples, want 4", n)
+	}
+
+	// Check stereo duplication
+	if out[0] != out[1] {
+		t.Errorf("stereo sample 0: L=%d, R=%d (should be equal)", out[0], out[1])
+	}
+	if out[2] != out[3] {
+		t.Errorf("stereo sample 1: L=%d, R=%d (should be equal)", out[2], out[3])
+	}
+}

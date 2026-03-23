@@ -94,6 +94,11 @@ type Encoder struct {
 	// dual mono mode. nil for mono or when useSILK is false.
 	silkEncoderR *SILKFrameEncoder
 
+	// useMidSide enables mid/side stereo coding for stereo input.
+	// When true, stereo samples are transformed to M=(L+R)/2 and S=(L-R)/2
+	// before encoding, which can improve compression for correlated channels.
+	useMidSide bool
+
 	// dtx implements Discontinuous Transmission for bandwidth reduction
 	// during silence periods. Initialized lazily when DTX is enabled.
 	dtx *DTX
@@ -261,6 +266,27 @@ func (e *Encoder) EnableSILK() error {
 // IsSILKEnabled returns true if SILK encoding is enabled for this encoder.
 func (e *Encoder) IsSILKEnabled() bool {
 	return e.useSILK && e.silkEncoder != nil
+}
+
+// EnableMidSideStereo enables mid/side stereo coding for stereo encoders.
+// When enabled, stereo samples are transformed from L/R to M/S (mid/side)
+// before encoding: M = (L + R) / 2, S = (L - R) / 2.
+// This improves compression efficiency when left and right channels are
+// highly correlated (e.g., center-panned audio).
+// Has no effect on mono encoders.
+func (e *Encoder) EnableMidSideStereo() {
+	e.useMidSide = true
+}
+
+// DisableMidSideStereo disables mid/side stereo coding, reverting to
+// dual mono encoding (default) for stereo content.
+func (e *Encoder) DisableMidSideStereo() {
+	e.useMidSide = false
+}
+
+// IsMidSideStereoEnabled returns true if mid/side stereo coding is enabled.
+func (e *Encoder) IsMidSideStereoEnabled() bool {
+	return e.useMidSide
 }
 
 // Application returns the application mode configured for this encoder.
@@ -520,6 +546,22 @@ func (e *Encoder) encodeFrame(frame []int16) ([]byte, error) {
 
 	// Default: flate compression (backward compatible)
 	return e.encodeFrameFlate(frame, toc)
+}
+
+// convertToMidSide converts interleaved L/R stereo samples to M/S (mid/side).
+// Returns mid samples (M = (L+R)/2) and side samples (S = (L-R)/2).
+func convertToMidSide(interleaved []int16) (mid, side []float64) {
+	samplesPerChannel := len(interleaved) / 2
+	mid = make([]float64, samplesPerChannel)
+	side = make([]float64, samplesPerChannel)
+
+	for i := 0; i < samplesPerChannel; i++ {
+		l := float64(interleaved[i*2]) / 32768.0
+		r := float64(interleaved[i*2+1]) / 32768.0
+		mid[i] = (l + r) / 2.0
+		side[i] = (l - r) / 2.0
+	}
+	return mid, side
 }
 
 // encodeFrameSILK encodes a frame using the SILK codec for RFC 6716 compliance.

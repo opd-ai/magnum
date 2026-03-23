@@ -295,19 +295,17 @@ func (d *Decoder) updatePLCState(samples []int16, count int) {
 	d.plcState.PacketReceived(frameData)
 }
 
-// decodeCELT decodes a CELT-encoded packet.
-func (d *Decoder) decodeCELT(packet []byte, out []int16) (int, error) {
+// validateTOCHeader validates the TOC header and returns stereo flag and config.
+func (d *Decoder) validateTOCHeader(packet []byte) (toc tocHeader, err error) {
 	if len(packet) < 2 {
 		return 0, ErrTooShortForTableOfContentsHeader
 	}
 
-	// Parse TOC header
-	toc := tocHeader(packet[0])
+	toc = tocHeader(packet[0])
 	if toc.frameCode() != frameCodeOneFrame {
 		return 0, ErrUnsupportedFrameCode
 	}
 
-	// Validate channel configuration
 	stereo := toc.isStereo()
 	packetChannels := 1
 	if stereo {
@@ -317,127 +315,78 @@ func (d *Decoder) decodeCELT(packet []byte, out []int16) (int, error) {
 		return 0, fmt.Errorf("magnum: decode: %w", ErrChannelMismatch)
 	}
 
-	// Validate sample rate configuration
 	config := toc.configuration()
 	packetSampleRate := sampleRateForConfig(config)
 	if packetSampleRate != d.sampleRate {
 		return 0, fmt.Errorf("magnum: decode: %w", ErrSampleRateMismatch)
 	}
 
-	// Decode CELT payload
-	celtPayload := packet[1:]
-	floatSamples, err := d.celtDecoder.DecodeFrame(celtPayload)
-	if err != nil {
-		return 0, fmt.Errorf("magnum: decode: CELT: %w", err)
-	}
-
-	// Convert float64 samples to int16
-	numSamples := len(floatSamples) * d.channels
-	if d.channels == 1 {
-		if out != nil && len(out) >= numSamples {
-			for i, s := range floatSamples {
-				// Clamp and convert
-				sample := s * 32767.0
-				if sample > 32767 {
-					sample = 32767
-				} else if sample < -32768 {
-					sample = -32768
-				}
-				out[i] = int16(sample)
-			}
-		}
-	} else {
-		// Stereo: duplicate mono to both channels (simplification)
-		if out != nil && len(out) >= numSamples {
-			for i, s := range floatSamples {
-				sample := s * 32767.0
-				if sample > 32767 {
-					sample = 32767
-				} else if sample < -32768 {
-					sample = -32768
-				}
-				out[i*2] = int16(sample)
-				out[i*2+1] = int16(sample)
-			}
-		}
-	}
-
-	return numSamples, nil
+	return toc, nil
 }
 
-// decodeHybrid decodes a hybrid SILK+CELT encoded packet.
-// This handles TOC configurations 12-19 (hybrid SWB and FB modes).
-func (d *Decoder) decodeHybrid(packet []byte, out []int16) (int, error) {
-	if len(packet) < 2 {
-		return 0, ErrTooShortForTableOfContentsHeader
-	}
-
-	// Parse TOC header
-	toc := tocHeader(packet[0])
-	if toc.frameCode() != frameCodeOneFrame {
-		return 0, ErrUnsupportedFrameCode
-	}
-
-	// Validate channel configuration
-	stereo := toc.isStereo()
-	packetChannels := 1
-	if stereo {
-		packetChannels = 2
-	}
-	if packetChannels != d.channels {
-		return 0, fmt.Errorf("magnum: decode: %w", ErrChannelMismatch)
-	}
-
-	// Validate sample rate configuration
-	config := toc.configuration()
-	packetSampleRate := sampleRateForConfig(config)
-	if packetSampleRate != d.sampleRate {
-		return 0, fmt.Errorf("magnum: decode: %w", ErrSampleRateMismatch)
-	}
-
-	// Decode hybrid payload
-	hybridPayload := packet[1:]
-	floatSamples, err := d.hybridDecoder.DecodeFrame(hybridPayload)
-	if err != nil {
-		return 0, fmt.Errorf("magnum: decode: hybrid: %w", err)
-	}
-
-	// Convert float64 samples to int16
+// convertFloatSamplesToInt16 converts float64 samples to int16, handling mono/stereo.
+func (d *Decoder) convertFloatSamplesToInt16(floatSamples []float64, out []int16) int {
 	numSamples := len(floatSamples)
 	if d.channels == 2 {
 		numSamples *= 2
 	}
 
-	if d.channels == 1 {
-		if out != nil && len(out) >= numSamples {
-			for i, s := range floatSamples {
-				// Clamp and convert
-				sample := s * 32767.0
-				if sample > 32767 {
-					sample = 32767
-				} else if sample < -32768 {
-					sample = -32768
-				}
-				out[i] = int16(sample)
-			}
-		}
-	} else {
-		// Stereo: duplicate mono to both channels (simplification)
-		if out != nil && len(out) >= numSamples {
-			for i, s := range floatSamples {
-				sample := s * 32767.0
-				if sample > 32767 {
-					sample = 32767
-				} else if sample < -32768 {
-					sample = -32768
-				}
-				out[i*2] = int16(sample)
-				out[i*2+1] = int16(sample)
-			}
-		}
+	if out == nil || len(out) < numSamples {
+		return numSamples
 	}
 
-	return numSamples, nil
+	if d.channels == 1 {
+		for i, s := range floatSamples {
+			out[i] = clampToInt16(s * 32767.0)
+		}
+	} else {
+		for i, s := range floatSamples {
+			sample := clampToInt16(s * 32767.0)
+			out[i*2] = sample
+			out[i*2+1] = sample
+		}
+	}
+	return numSamples
+}
+
+// clampToInt16 clamps a float64 value to int16 range.
+func clampToInt16(sample float64) int16 {
+	if sample > 32767 {
+		sample = 32767
+	} else if sample < -32768 {
+		sample = -32768
+	}
+	return int16(sample)
+}
+
+// decodeCELT decodes a CELT-encoded packet.
+func (d *Decoder) decodeCELT(packet []byte, out []int16) (int, error) {
+	_, err := d.validateTOCHeader(packet)
+	if err != nil {
+		return 0, err
+	}
+
+	floatSamples, err := d.celtDecoder.DecodeFrame(packet[1:])
+	if err != nil {
+		return 0, fmt.Errorf("magnum: decode: CELT: %w", err)
+	}
+
+	return d.convertFloatSamplesToInt16(floatSamples, out), nil
+}
+
+// decodeHybrid decodes a hybrid SILK+CELT encoded packet.
+func (d *Decoder) decodeHybrid(packet []byte, out []int16) (int, error) {
+	_, err := d.validateTOCHeader(packet)
+	if err != nil {
+		return 0, err
+	}
+
+	floatSamples, err := d.hybridDecoder.DecodeFrame(packet[1:])
+	if err != nil {
+		return 0, fmt.Errorf("magnum: decode: hybrid: %w", err)
+	}
+
+	return d.convertFloatSamplesToInt16(floatSamples, out), nil
 }
 
 // decodeFlate decodes a flate-compressed packet (fallback for SILK paths).
@@ -753,99 +702,105 @@ func decodePayloadWithReader(packet, buf, chunk []byte, flateR io.ReadCloser) (r
 		return nil, false, 0, io.ErrUnexpectedEOF
 	}
 
-	// Parse and validate TOC header.
 	toc := tocHeader(packet[0])
 	fc := toc.frameCode()
 	stereo = toc.isStereo()
 	config = toc.configuration()
 
-	// Handle different frame codes
 	switch fc {
 	case frameCodeOneFrame:
-		// Single frame: payload starts at byte 1
 		return decodeFlatePayload(packet[1:], buf, chunk, flateR, stereo, config)
-
 	case frameCodeTwoEqualFrames:
-		// Two equal-size frames: [TOC][Frame1][Frame2]
-		// Each frame is half of the remaining packet
-		payloadLen := len(packet) - 1
-		if payloadLen%2 != 0 {
-			return nil, false, 0, ErrInvalidFrameData
-		}
-		frameLen := payloadLen / 2
-		frame1 := packet[1 : 1+frameLen]
-		frame2 := packet[1+frameLen:]
-		return decodeTwoFrames(frame1, frame2, buf, chunk, flateR, stereo, config)
-
+		return decodeTwoEqualFrames(packet, buf, chunk, flateR, stereo, config)
 	case frameCodeTwoDifferentFrames:
-		// Two different-size frames: [TOC][length1][Frame1][Frame2]
-		if len(packet) < 2 {
-			return nil, false, 0, io.ErrUnexpectedEOF
-		}
-		frame1Len, consumed := decodeFrameLength(packet[1:])
-		if consumed == 0 || 1+consumed+frame1Len > len(packet) {
-			return nil, false, 0, ErrInvalidFrameData
-		}
-		frame1Start := 1 + consumed
-		frame1 := packet[frame1Start : frame1Start+frame1Len]
-		frame2 := packet[frame1Start+frame1Len:]
-		return decodeTwoFrames(frame1, frame2, buf, chunk, flateR, stereo, config)
-
+		return decodeTwoDifferentFrames(packet, buf, chunk, flateR, stereo, config)
 	case frameCodeArbitraryFrames:
-		// VBR multi-frame packets (frame code 3)
-		// Format: [TOC][M byte][len1][frame1]...[lenM-1][frameM-1][frameM]
-		if len(packet) < 2 {
-			return nil, false, 0, io.ErrUnexpectedEOF
-		}
-		mByte := packet[1]
-		frameCount := int(mByte >> 2)
-		// padding := (mByte & 0x02) != 0 // bit 1 - padding flag (not used yet)
-		isVBR := (mByte & 0x01) != 0 // bit 0 - VBR flag
-
-		if frameCount == 0 || frameCount > 48 {
-			return nil, false, 0, ErrInvalidFrameData
-		}
-
-		if !isVBR {
-			// CBR mode: all frames same size, no length prefixes
-			// Total payload divided equally among frames
-			payload := packet[2:]
-			if len(payload)%frameCount != 0 {
-				return nil, false, 0, ErrInvalidFrameData
-			}
-			frameLen := len(payload) / frameCount
-			frames := make([][]byte, frameCount)
-			for i := 0; i < frameCount; i++ {
-				frames[i] = payload[i*frameLen : (i+1)*frameLen]
-			}
-			return decodeMultipleFrames(frames, buf, chunk, stereo, config)
-		}
-
-		// VBR mode: length prefix for all but last frame
-		offset := 2
-		frames := make([][]byte, frameCount)
-		for i := 0; i < frameCount-1; i++ {
-			if offset >= len(packet) {
-				return nil, false, 0, ErrInvalidFrameData
-			}
-			frameLen, consumed := decodeFrameLength(packet[offset:])
-			if consumed == 0 {
-				return nil, false, 0, ErrInvalidFrameData
-			}
-			offset += consumed
-			if offset+frameLen > len(packet) {
-				return nil, false, 0, ErrInvalidFrameData
-			}
-			frames[i] = packet[offset : offset+frameLen]
-			offset += frameLen
-		}
-		// Last frame uses remaining bytes
-		frames[frameCount-1] = packet[offset:]
-		return decodeMultipleFrames(frames, buf, chunk, stereo, config)
-
+		return decodeArbitraryFrames(packet, buf, chunk, stereo, config)
 	default:
 		return nil, false, 0, ErrUnsupportedFrameCode
 	}
+}
+
+// decodeTwoEqualFrames handles frame code 1: two equal-size frames.
+func decodeTwoEqualFrames(packet, buf, chunk []byte, flateR io.ReadCloser, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
+	payloadLen := len(packet) - 1
+	if payloadLen%2 != 0 {
+		return nil, false, 0, ErrInvalidFrameData
+	}
+	frameLen := payloadLen / 2
+	frame1 := packet[1 : 1+frameLen]
+	frame2 := packet[1+frameLen:]
+	return decodeTwoFrames(frame1, frame2, buf, chunk, flateR, stereo, config)
+}
+
+// decodeTwoDifferentFrames handles frame code 2: two different-size frames.
+func decodeTwoDifferentFrames(packet, buf, chunk []byte, flateR io.ReadCloser, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
+	if len(packet) < 2 {
+		return nil, false, 0, io.ErrUnexpectedEOF
+	}
+	frame1Len, consumed := decodeFrameLength(packet[1:])
+	if consumed == 0 || 1+consumed+frame1Len > len(packet) {
+		return nil, false, 0, ErrInvalidFrameData
+	}
+	frame1Start := 1 + consumed
+	frame1 := packet[frame1Start : frame1Start+frame1Len]
+	frame2 := packet[frame1Start+frame1Len:]
+	return decodeTwoFrames(frame1, frame2, buf, chunk, flateR, stereo, config)
+}
+
+// decodeArbitraryFrames handles frame code 3: VBR or CBR multi-frame packets.
+func decodeArbitraryFrames(packet, buf, chunk []byte, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
+	if len(packet) < 2 {
+		return nil, false, 0, io.ErrUnexpectedEOF
+	}
+	mByte := packet[1]
+	frameCount := int(mByte >> 2)
+	isVBR := (mByte & 0x01) != 0
+
+	if frameCount == 0 || frameCount > 48 {
+		return nil, false, 0, ErrInvalidFrameData
+	}
+
+	if !isVBR {
+		return decodeCBRFrames(packet[2:], frameCount, buf, chunk, stereo, config)
+	}
+	return decodeVBRFrames(packet, frameCount, buf, chunk, stereo, config)
+}
+
+// decodeCBRFrames decodes CBR multi-frame packets (all frames same size).
+func decodeCBRFrames(payload []byte, frameCount int, buf, chunk []byte, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
+	if len(payload)%frameCount != 0 {
+		return nil, false, 0, ErrInvalidFrameData
+	}
+	frameLen := len(payload) / frameCount
+	frames := make([][]byte, frameCount)
+	for i := 0; i < frameCount; i++ {
+		frames[i] = payload[i*frameLen : (i+1)*frameLen]
+	}
+	return decodeMultipleFrames(frames, buf, chunk, stereo, config)
+}
+
+// decodeVBRFrames decodes VBR multi-frame packets (variable frame sizes).
+func decodeVBRFrames(packet []byte, frameCount int, buf, chunk []byte, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
+	offset := 2
+	frames := make([][]byte, frameCount)
+	for i := 0; i < frameCount-1; i++ {
+		if offset >= len(packet) {
+			return nil, false, 0, ErrInvalidFrameData
+		}
+		frameLen, consumed := decodeFrameLength(packet[offset:])
+		if consumed == 0 {
+			return nil, false, 0, ErrInvalidFrameData
+		}
+		offset += consumed
+		if offset+frameLen > len(packet) {
+			return nil, false, 0, ErrInvalidFrameData
+		}
+		frames[i] = packet[offset : offset+frameLen]
+		offset += frameLen
+	}
+	frames[frameCount-1] = packet[offset:]
+	return decodeMultipleFrames(frames, buf, chunk, stereo, config)
 }
 
 // decodeFlatePayload decompresses a single flate-compressed frame payload.
