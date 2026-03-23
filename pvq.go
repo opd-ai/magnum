@@ -63,18 +63,19 @@ func (p *PVQ) V(n, k int) uint64 {
 // This is the key combinatoric function for PVQ encoding/decoding.
 // U(N,K) is symmetric: U(N,K) = U(K,N)
 func (p *PVQ) U(n, k int) uint64 {
-	// Normalize to use symmetry (access smaller index first)
-	if k > n {
-		n, k = k, n
-	}
-
-	// Base cases
+	// Base cases (before symmetry normalization)
 	if k == 0 {
 		return 1
 	}
 	if n == 0 {
 		return 0
 	}
+
+	// Normalize to use symmetry (access smaller index first)
+	if k > n {
+		n, k = k, n
+	}
+
 	if k == 1 {
 		return 1 // U(N,1) = 1 for all N >= 1
 	}
@@ -238,7 +239,7 @@ func (p *PVQ) DecodeFromIndex(index uint64, n, k int) *PVQCodeword {
 
 // encodeIndex computes the combinatoric index for a pulse configuration.
 // The index uniquely identifies the codeword within V(N,K) possibilities.
-func (p *PVQ) encodeIndex(pulses, signs []int, n, k int) uint64 {
+func (pvq *PVQ) encodeIndex(pulses, signs []int, n, k int) uint64 {
 	if k == 0 {
 		return 0
 	}
@@ -248,32 +249,31 @@ func (p *PVQ) encodeIndex(pulses, signs []int, n, k int) uint64 {
 	// Process each dimension
 	remainingK := k
 	for i := 0; i < n && remainingK > 0; i++ {
-		// U(N-i, K') gives the count of codewords where dimension i is zero or positive
 		// For each pulse count p at position i, we add the codewords skipped
 
-		// First, handle the sign
 		if pulses[i] > 0 {
 			// Non-zero pulse at this position
-			// Add U(N-i, K) for all codewords with smaller values at position i
-			for p := 0; p < pulses[i]; p++ {
-				// Count codewords with exactly p pulses at position i, negative sign first
-				if p > 0 {
-					// Negative p pulses
-					index += p.V(n-i-1, remainingK-p)
-				}
-				// Positive p pulses (for p > 0)
-				if p > 0 {
-					index += p.V(n-i-1, remainingK-p)
+			// Add codewords for all smaller absolute pulse values
+			for absP := 0; absP < pulses[i]; absP++ {
+				if absP > 0 {
+					// Both positive and negative for absP pulses
+					index += 2 * pvq.V(n-i-1, remainingK-absP)
+				} else {
+					// Zero pulses at this position
+					index += pvq.V(n-i-1, remainingK)
 				}
 			}
 
 			// Now account for sign at current position
 			if signs[i] < 0 {
-				// Add codewords with positive sign for this pulse count
-				index += p.V(n-i-1, remainingK-pulses[i])
+				// Positive comes before negative in our ordering
+				index += pvq.V(n-i-1, remainingK-pulses[i])
 			}
 
 			remainingK -= pulses[i]
+		} else {
+			// Zero pulses, no contribution to index at this position
+			// but we consume the "zero" codewords from V(n-i-1, remainingK)
 		}
 	}
 
@@ -281,7 +281,7 @@ func (p *PVQ) encodeIndex(pulses, signs []int, n, k int) uint64 {
 }
 
 // decodeIndex reconstructs pulses and signs from a combinatoric index.
-func (p *PVQ) decodeIndex(cw *PVQCodeword, index uint64, n, k int) {
+func (pvq *PVQ) decodeIndex(cw *PVQCodeword, index uint64, n, k int) {
 	if k == 0 {
 		return
 	}
@@ -296,10 +296,10 @@ func (p *PVQ) decodeIndex(cw *PVQCodeword, index uint64, n, k int) {
 
 			if pulseCount == 0 {
 				// Zero pulses at this position
-				countForPulse = p.V(n-i-1, remainingK)
+				countForPulse = pvq.V(n-i-1, remainingK)
 			} else {
 				// Non-zero pulses: both signs possible
-				countForPulse = 2 * p.V(n-i-1, remainingK-pulseCount)
+				countForPulse = 2 * pvq.V(n-i-1, remainingK-pulseCount)
 			}
 
 			if remainingIndex < countForPulse {
@@ -307,7 +307,7 @@ func (p *PVQ) decodeIndex(cw *PVQCodeword, index uint64, n, k int) {
 
 				if pulseCount > 0 {
 					// Determine sign
-					half := p.V(n-i-1, remainingK-pulseCount)
+					half := pvq.V(n-i-1, remainingK-pulseCount)
 					if remainingIndex < half {
 						cw.Signs[i] = 1 // Positive
 					} else {

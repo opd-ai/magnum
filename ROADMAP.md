@@ -79,7 +79,7 @@ audio. It is transform-based (MDCT → band energy → PVQ spectral coding).
 #### 2c — PVQ spectral coding
 - [x] Implement Pyramid Vector Quantization (`alg_quant`) for spectral
   coefficient vectors.
-- [ ] Implement the matching `alg_unquant` decoder.
+- [x] Implement the matching `alg_unquant` decoder.
 - [ ] Implement the `spreading` and `tf_change` parameters.
 
 #### 2d — CELT frame assembly
