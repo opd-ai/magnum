@@ -13,8 +13,8 @@ This document identifies gaps between the project's stated goals and the current
 
 ## SetBitrate Is a No-Op Placeholder
 
-- **Stated Goal**: README line 94 states `SetBitrate(bitrate int)` — "Set target bitrate (bps, clamped to 6000–510000)."
-- **Current State**: `encoder.go:58-75` stores the bitrate with proper clamping, but `encodeFrame()` at `encoder.go:135` uses `flate.DefaultCompression` unconditionally. The stored bitrate is never read.
+- **Stated Goal**: README documents `SetBitrate(bitrate int)` — "Set target bitrate (bps, clamped to 6000–510000)."
+- **Current State**: `encoder.go:71-84` stores the bitrate with proper clamping, but the flate compressor is initialized with `flate.DefaultCompression` at `encoder.go:48`. The stored bitrate is never read.
 - **Impact**: Users calling `SetBitrate()` expecting smaller/larger packets see no change in output size. Documented in "Limitations" as "Bitrate hint only" but API suggests active control.
 - **Closing the Gap**: 
   1. Short-term: Add prominent doc comment on `SetBitrate` stating it's a no-op placeholder for future CELT/SILK integration.

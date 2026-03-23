@@ -87,22 +87,69 @@ Frame sizes for other sample rates:
 
 ## API
 
+### Encoder
+
 | Symbol | Description |
 |---|---|
 | `NewEncoder(sampleRate, channels int) (*Encoder, error)` | Create an encoder. Supported rates: 8000, 16000, 24000, 48000 Hz. Channels: 1 or 2. |
 | `(*Encoder).Encode(pcm []int16) ([]byte, error)` | Encode one 20 ms frame. Buffers input; returns `nil` until a complete frame is ready. Pass `nil` to drain buffered frames. |
-| `(*Encoder).SetBitrate(bitrate int)` | Set target bitrate (bps, clamped to 6000–510000). |
-| `Decode(packet []byte) ([]int16, error)` | Decode a packet produced by `Encode`. |
+| `(*Encoder).Flush() ([]byte, error)` | Flush any remaining buffered samples as a zero-padded final frame. |
+| `(*Encoder).SetBitrate(bitrate int)` | Set target bitrate (bps, clamped to 6000–510000). Note: stored but not yet used. |
+
+### Decoder
+
+| Symbol | Description |
+|---|---|
+| `NewDecoder(sampleRate, channels int) (*Decoder, error)` | Create a decoder. Same rate/channel constraints as `NewEncoder`. |
+| `(*Decoder).Decode(packet, out []int16) (int, error)` | Decode into pre-allocated buffer. Returns sample count. |
+| `(*Decoder).DecodeAlloc(packet []byte) ([]int16, error)` | Decode and allocate output slice. |
+| `(*Decoder).SampleRate() int` | Returns configured sample rate. |
+| `(*Decoder).Channels() int` | Returns configured channel count. |
+| `Decode(packet []byte) ([]int16, error)` | Standalone decode function for simple use cases. |
+| `DecodeWithInfo(packet []byte) ([]int16, bool, error)` | Decode returning samples and stereo flag. |
+
+### Range Coder (RFC 6716 §4.1)
+
+| Symbol | Description |
+|---|---|
+| `NewRangeEncoder() *RangeEncoder` | Create an arithmetic range encoder. |
+| `(*RangeEncoder).Encode(fl, fh, ft uint32)` | Encode a symbol with frequency range [fl, fh) out of ft. |
+| `(*RangeEncoder).EncodeBits(value, bits uint32)` | Encode raw bits (1–25 bits) directly. |
+| `(*RangeEncoder).EncodeLogP(val int, logp uint)` | Encode binary symbol with probability 1/2^logp. |
+| `(*RangeEncoder).Bytes() []byte` | Finalize and return encoded byte stream. |
+| `(*RangeEncoder).Reset()` | Reset encoder for reuse. |
+| `NewRangeDecoder(data []byte) *RangeDecoder` | Create a range decoder from encoded data. |
+| `(*RangeDecoder).Decode(ft uint32) uint32` | Decode symbol frequency (call Update after). |
+| `(*RangeDecoder).Update(fl, fh, ft uint32)` | Update state after determining symbol range. |
+| `(*RangeDecoder).DecodeBits(bits uint32) uint32` | Decode raw bits directly. |
+| `(*RangeDecoder).DecodeLogP(logp uint) int` | Decode binary symbol. |
+| `(*RangeDecoder).Remaining() int` | Return unread bytes count. |
+
+### Configuration Constants
+
+| Symbol | Description |
+|---|---|
+| `Configuration` | Type representing Opus TOC configuration (RFC 6716 §3.1). |
+| `ConfigurationSILKNB20ms` | SILK narrowband 8 kHz, 20 ms. |
+| `ConfigurationSILKWB20ms` | SILK wideband 16 kHz, 20 ms. |
+| `ConfigurationCELTSWB20ms` | CELT superwideband 24 kHz, 20 ms. |
+| `ConfigurationCELTFB20ms` | CELT fullband 48 kHz, 20 ms. |
+| `SampleRate8k`, `SampleRate16k`, `SampleRate24k`, `SampleRate48k` | Supported sample rate constants. |
+
+### Sentinel Errors
 
 Exported sentinel errors for `errors.Is` branching:
 
 | Error | Returned by |
 |---|---|
-| `ErrUnsupportedSampleRate` | `NewEncoder` with an unsupported sample rate |
-| `ErrUnsupportedChannelCount` | `NewEncoder` with channels ≠ 1 or 2 |
-| `ErrTooShortForTableOfContentsHeader` | `Decode` with an empty packet |
-| `ErrInvalidFrameData` | `Decode` with an odd-length decompressed payload |
+| `ErrUnsupportedSampleRate` | `NewEncoder`/`NewDecoder` with unsupported sample rate |
+| `ErrUnsupportedChannelCount` | `NewEncoder`/`NewDecoder` with channels ≠ 1 or 2 |
+| `ErrTooShortForTableOfContentsHeader` | `Decode` with empty packet |
+| `ErrInvalidFrameData` | `Decode` with odd-length decompressed payload |
 | `ErrPayloadTooLarge` | `Decode` when decompressed data exceeds 64 KiB |
+| `ErrUnsupportedFrameCode` | `Decode` with multi-frame packet (codes 1, 2, 3) |
+| `ErrChannelMismatch` | `Decoder.Decode` when packet stereo flag ≠ decoder channels |
+| `ErrSampleRateMismatch` | `Decoder.Decode` when packet config ≠ decoder sample rate |
 
 ## Packet format
 

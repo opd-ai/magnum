@@ -15,6 +15,7 @@ produces packets interoperable with [libopus](https://opus-codec.org/) and
 | TOC configuration matched to sample rate | ✅ implemented |
 | Interleaved PCM frame buffering (mono/stereo) | ✅ implemented |
 | `Encode` / `Decode` API (pion/opus-compatible shape) | ✅ implemented |
+| `Decoder` type (magnum packets only) | ✅ implemented |
 | `SetBitrate` | ✅ stored; not yet used |
 | SILK codec (narrowband / wideband) | ❌ not implemented |
 | CELT codec (superwideband / fullband) | ❌ not implemented |
