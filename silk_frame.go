@@ -391,7 +391,7 @@ func (enc *SILKFrameEncoder) encodePitch(rc *RangeEncoder, pitchLags []int) {
 }
 
 // encodeLTP encodes LTP (Long-Term Prediction) codebook indices.
-func (enc *SILKFrameEncoder) encodeLTP(rc *RangeEncoder, ltpResult *LTPResult) {
+func (enc *SILKFrameEncoder) encodeLTP(rc *RangeEncoder, ltpResult *LTPFrameResult) {
 	if ltpResult == nil {
 		return
 	}
@@ -403,7 +403,7 @@ func (enc *SILKFrameEncoder) encodeLTP(rc *RangeEncoder, ltpResult *LTPResult) {
 }
 
 // encodeGains encodes subframe gain indices.
-func (enc *SILKFrameEncoder) encodeGains(rc *RangeEncoder, frameGains *GainResult) {
+func (enc *SILKFrameEncoder) encodeGains(rc *RangeEncoder, frameGains *FrameGains) {
 	for i := 0; i < GainNumSubframes; i++ {
 		idx := frameGains.Subframes[i].QuantIndex
 		if idx < 0 {
@@ -417,7 +417,7 @@ func (enc *SILKFrameEncoder) encodeGains(rc *RangeEncoder, frameGains *GainResul
 }
 
 // updateState updates encoder state for the next frame.
-func (enc *SILKFrameEncoder) updateState(quantNLSF []float64, frameGains *GainResult, pitchLags []int) {
+func (enc *SILKFrameEncoder) updateState(quantNLSF []float64, frameGains *FrameGains, pitchLags []int) {
 	copy(enc.prevNLSF, quantNLSF)
 	for i := 0; i < GainNumSubframes; i++ {
 		enc.prevGains[i] = frameGains.Subframes[i].LogGain
@@ -426,7 +426,7 @@ func (enc *SILKFrameEncoder) updateState(quantNLSF []float64, frameGains *GainRe
 }
 
 // storeLBRRFrame stores frame data for LBRR encoding.
-func (enc *SILKFrameEncoder) storeLBRRFrame(lpcCoeffs []float64, frameGains *GainResult, pitchLags []int, isVoiced bool, energyDB float64) {
+func (enc *SILKFrameEncoder) storeLBRRFrame(lpcCoeffs []float64, frameGains *FrameGains, pitchLags []int, isVoiced bool, energyDB float64) {
 	if !enc.lbrrEncoder.IsEnabled() {
 		return
 	}
