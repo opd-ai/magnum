@@ -1,5 +1,8 @@
 # magnum
 
+[![CI](https://github.com/opd-ai/magnum/actions/workflows/ci.yml/badge.svg)](https://github.com/opd-ai/magnum/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/opd-ai/magnum/branch/main/graph/badge.svg)](https://codecov.io/gh/opd-ai/magnum)
+
 Opus encoder in pure Go — a minimal, pure-Go Opus-compatible audio encoder
 following [pion/opus](https://github.com/pion/opus) API patterns.
 

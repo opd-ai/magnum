@@ -114,16 +114,16 @@
 
 **Impact**: Prevents regressions; enables contributor confidence and release automation.
 
-**Current state**: No CI configuration; tests run only manually.
+**Current state**: CI configuration added in `.github/workflows/ci.yml`.
 
-- [ ] **3.1** Create `.github/workflows/ci.yml` with:
+- [x] **3.1** Create `.github/workflows/ci.yml` with:
   - `go build ./...`
   - `go test -race -coverprofile=coverage.out ./...`
   - `go vet ./...`
   - Coverage threshold check (maintain ≥85%)
-- [ ] **3.2** Add matrix testing for `linux/amd64`, `linux/arm64`, `darwin/amd64`.
+- [x] **3.2** Add matrix testing for `linux/amd64`, `linux/arm64`, `darwin/amd64`.
 - [ ] **3.3** Add conformance test job (after Priority 2 is complete).
-- [ ] **3.4** Publish coverage badge in README.
+- [x] **3.4** Publish coverage badge in README.
 
 **Validation**: All CI checks pass on push/PR; badge displays current coverage.
 
