@@ -77,7 +77,7 @@ audio. It is transform-based (MDCT → band energy → PVQ spectral coding).
   `quant_fine_energy`) and their decoders.
 
 #### 2c — PVQ spectral coding
-- [ ] Implement Pyramid Vector Quantization (`alg_quant`) for spectral
+- [x] Implement Pyramid Vector Quantization (`alg_quant`) for spectral
   coefficient vectors.
 - [ ] Implement the matching `alg_unquant` decoder.
 - [ ] Implement the `spreading` and `tf_change` parameters.
