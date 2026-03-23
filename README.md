@@ -95,11 +95,22 @@ Frame sizes for other sample rates:
 | `ApplicationVoIP` | Optimizes for voice over IP (low latency, speech). Value: 2048. |
 | `ApplicationAudio` | Optimizes for general audio (best quality). Value: 2049. Default. |
 | `ApplicationLowDelay` | Lowest possible latency. Value: 2051. |
+| `Bandwidth` | Type representing encoder bandwidth setting. |
+| `BandwidthNarrowband` | Limits audio to 4 kHz bandwidth. Value: 1101. |
+| `BandwidthMediumband` | Limits audio to 6 kHz bandwidth. Value: 1102. |
+| `BandwidthWideband` | Limits audio to 8 kHz bandwidth. Value: 1103. |
+| `BandwidthSuperwideband` | Limits audio to 12 kHz bandwidth. Value: 1104. |
+| `BandwidthFullband` | Allows full 20 kHz bandwidth. Value: 1105. |
+| `BandwidthAuto` | Automatic bandwidth selection. Value: -1000. Default. |
 | `NewEncoder(sampleRate, channels int) (*Encoder, error)` | Create an encoder with default `ApplicationAudio`. Supported rates: 8000, 16000, 24000, 48000 Hz. Channels: 1 or 2. |
 | `NewEncoderWithApplication(sampleRate, channels int, app Application) (*Encoder, error)` | Create an encoder with explicit application mode. Follows pion/opus API pattern. |
 | `(*Encoder).Encode(pcm []int16) ([]byte, error)` | Encode one 20 ms frame. Buffers input; returns `nil` until a complete frame is ready. Pass `nil` to drain buffered frames. |
 | `(*Encoder).Flush() ([]byte, error)` | Flush any remaining buffered samples as a zero-padded final frame. |
 | `(*Encoder).SetBitrate(bitrate int)` | Set target bitrate (bps, clamped to 6000–510000). Stored for future CELT/SILK integration; currently unused. |
+| `(*Encoder).SetComplexity(complexity int)` | Set complexity level (0-10). Stored for future CELT/SILK integration; currently unused. |
+| `(*Encoder).Complexity() int` | Returns the complexity level configured for this encoder. |
+| `(*Encoder).SetBandwidth(bandwidth Bandwidth)` | Set maximum audio bandwidth. Stored for future CELT/SILK integration; currently unused. |
+| `(*Encoder).Bandwidth() Bandwidth` | Returns the bandwidth setting configured for this encoder. |
 | `(*Encoder).Application() Application` | Returns the application mode configured for this encoder. |
 
 ### Decoder

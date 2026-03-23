@@ -121,8 +121,8 @@ func NewEncoderWithApplication(sampleRate, channels int, app Application) (*Enco
 		channels:    channels,
 		bitrate:     64000, // default: 64 kbps
 		application: app,
-		complexity:  10,             // default: highest quality
-		bandwidth:   BandwidthAuto,  // default: automatic
+		complexity:  10,            // default: highest quality
+		bandwidth:   BandwidthAuto, // default: automatic
 		buffer:      fb,
 		rawPCM:      rawPCM,
 		outputBuf:   outputBuf,
