@@ -193,6 +193,12 @@ also decode in `opusdec`; frame duration is configurable at the API level.
 **Goal:** expose a `Decoder` type that can decode packets produced by
 libopus, pion/opus, or any other compliant encoder — not only `magnum`.
 
+> **Note:** Before writing a new decoder from scratch, evaluate whether
+> [pion/opus](https://github.com/pion/opus) already provides a suitable
+> decode path that can be re-used directly (or wrapped). Re-using pion's
+> decoder would reduce duplicated effort and improve interoperability
+> confidence.
+
 ### Tasks
 - [x] Add `type Decoder struct` with `NewDecoder(sampleRate, channels int)`
   mirroring the pion/opus API (`Decoder.Decode(in []byte, out []int16)`).
