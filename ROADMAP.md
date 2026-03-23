@@ -95,7 +95,7 @@ audio. It is transform-based (MDCT → band energy → PVQ spectral coding).
 #### 2f — Integration
 - [x] Replace the current `flate` payload in `encodeFrame` with the CELT
   bitstream for 24 kHz and 48 kHz sample rates.
-- [ ] Validate encoded packets with `opusdec` / `opus_demo` from libopus.
+- [x] Validate encoded packets with `opusdec` / `opus_demo` from libopus.
 
 ### Success criteria
 Packets encoded by `magnum` for 48 kHz input decode without error in
@@ -115,25 +115,25 @@ for narrowband and wideband modes.
 ### Tasks
 
 #### 3a — LPC analysis
-- [ ] Implement autocorrelation-based LPC (Linear Predictive Coding)
+- [x] Implement autocorrelation-based LPC (Linear Predictive Coding)
   coefficient estimation (Levinson-Durbin / Burg algorithm).
-- [ ] Implement NLSF (Normalised Line Spectral Frequency) conversion and
+- [x] Implement NLSF (Normalised Line Spectral Frequency) conversion and
   the NLSF stabilisation procedure from the SILK spec (Appendix II).
-- [ ] Implement NLSF interpolation between frames.
+- [x] Implement NLSF interpolation between frames.
 
 #### 3b — Pitch (long-term prediction)
-- [ ] Implement open-loop pitch estimation for voiced speech detection.
-- [ ] Implement closed-loop LTP (Long-Term Prediction) analysis and
+- [x] Implement open-loop pitch estimation for voiced speech detection.
+- [x] Implement closed-loop LTP (Long-Term Prediction) analysis and
   quantization.
 
 #### 3c — LPC residual coding
-- [ ] Implement subframe gain coding.
-- [ ] Implement LPC excitation coding using the shape codebook.
-- [ ] Implement the PLC (Packet Loss Concealment) state machine for
+- [x] Implement subframe gain coding.
+- [x] Implement LPC excitation coding using the shape codebook.
+- [x] Implement the PLC (Packet Loss Concealment) state machine for
   the decoder path.
 
 #### 3d — VAD and DTX
-- [ ] Implement Voice Activity Detection (VAD) to detect silence frames.
+- [x] Implement Voice Activity Detection (VAD) to detect silence frames.
 - [ ] Implement Discontinuous Transmission (DTX) to suppress redundant
   silence packets.
 

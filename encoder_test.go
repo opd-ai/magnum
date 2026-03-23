@@ -1,8 +1,12 @@
 package magnum
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"io"
+	"os"
+	"os/exec"
 	"testing"
 )
 
@@ -838,4 +842,243 @@ func sinTable(x float64) float64 {
 		x -= 2 * 3.14159
 	}
 	return x - x*x*x/6 + x*x*x*x*x/120
+}
+
+// TestCELTLibopusValidation validates that CELT-encoded packets can be decoded
+// by libopus (via opusdec). This test requires the opus-tools package to be
+// installed and is skipped if opusdec is not available.
+//
+// This test fulfills ROADMAP Milestone 2f: "Validate encoded packets with
+// opusdec / opus_demo from libopus."
+func TestCELTLibopusValidation(t *testing.T) {
+	// Skip if opusdec is not available
+	if _, err := exec.LookPath("opusdec"); err != nil {
+		t.Skip("opusdec not available; install opus-tools to run this test")
+	}
+
+	// Create temporary directory for test files
+	tmpDir := t.TempDir()
+	oggFile := tmpDir + "/test.opus"
+	wavFile := tmpDir + "/test.wav"
+
+	// Create encoder with CELT enabled
+	enc, err := NewEncoder(48000, 1)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+	if err := enc.EnableCELT(); err != nil {
+		t.Fatalf("EnableCELT: %v", err)
+	}
+	enc.SetBitrate(64000)
+
+	// Generate 1 second of 440 Hz sine wave at 48kHz
+	const (
+		sampleRate = 48000
+		duration   = 1.0
+		frequency  = 440.0
+		frameSize  = 960 // 20ms at 48kHz
+	)
+	numSamples := int(float64(sampleRate) * duration)
+	pcm := make([]int16, numSamples)
+	for i := range pcm {
+		theta := 2.0 * 3.14159265359 * frequency * float64(i) / float64(sampleRate)
+		pcm[i] = int16(16000.0 * sinTable(theta))
+	}
+
+	// Encode all frames
+	var packets [][]byte
+	for i := 0; i < len(pcm); i += frameSize {
+		end := i + frameSize
+		if end > len(pcm) {
+			end = len(pcm)
+		}
+		packet, err := enc.Encode(pcm[i:end])
+		if err != nil {
+			t.Fatalf("Encode frame %d: %v", i/frameSize, err)
+		}
+		if packet != nil {
+			packets = append(packets, packet)
+		}
+	}
+	if packet, err := enc.Flush(); err == nil && packet != nil {
+		packets = append(packets, packet)
+	}
+
+	if len(packets) == 0 {
+		t.Fatal("No packets encoded")
+	}
+
+	// Write to Ogg Opus file
+	if err := writeOggOpusFile(oggFile, packets, sampleRate); err != nil {
+		t.Fatalf("writeOggOpusFile: %v", err)
+	}
+
+	// Decode with opusdec
+	cmd := exec.Command("opusdec", oggFile, wavFile)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Log packet details for debugging
+		if len(packets) > 0 {
+			toc := packets[0][0]
+			t.Logf("First packet TOC: 0x%02x (config=%d, stereo=%d, code=%d)",
+				toc, (toc>>3)&0x1F, (toc>>2)&0x01, toc&0x03)
+			t.Logf("First packet size: %d bytes", len(packets[0]))
+		}
+		t.Fatalf("opusdec failed: %v\nOutput: %s", err, output)
+	}
+
+	// Verify WAV file was created
+	info, err := os.Stat(wavFile)
+	if err != nil {
+		t.Fatalf("WAV file not created: %v", err)
+	}
+	if info.Size() < 1000 {
+		t.Errorf("WAV file too small: %d bytes", info.Size())
+	}
+
+	t.Logf("Successfully validated %d CELT packets with libopus (opusdec)", len(packets))
+}
+
+// writeOggOpusFile writes Opus packets to an Ogg container file.
+func writeOggOpusFile(filename string, packets [][]byte, sampleRate int) error {
+	f, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// ID Header page
+	idHeader := createOpusIDHeader(1, sampleRate)
+	if err := writeOggPage(f, idHeader, 0, 0, true, false); err != nil {
+		return err
+	}
+
+	// Comment Header page
+	commentHeader := createOpusCommentHeader()
+	if err := writeOggPage(f, commentHeader, 0, 1, false, false); err != nil {
+		return err
+	}
+
+	// Audio data pages
+	granulePos := uint64(0)
+	for i, pkt := range packets {
+		granulePos += 960 // 20ms at 48kHz
+		isLast := i == len(packets)-1
+		if err := writeOggPage(f, pkt, granulePos, uint32(i+2), false, isLast); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func createOpusIDHeader(channels, sampleRate int) []byte {
+	buf := new(bytes.Buffer)
+	buf.WriteString("OpusHead")
+	buf.WriteByte(1)                                           // version
+	buf.WriteByte(byte(channels))                              // channel count
+	binary.Write(buf, binary.LittleEndian, uint16(0))          // pre-skip
+	binary.Write(buf, binary.LittleEndian, uint32(sampleRate)) // input sample rate
+	binary.Write(buf, binary.LittleEndian, int16(0))           // output gain
+	buf.WriteByte(0)                                           // channel mapping family
+	return buf.Bytes()
+}
+
+func createOpusCommentHeader() []byte {
+	buf := new(bytes.Buffer)
+	buf.WriteString("OpusTags")
+	vendor := "magnum"
+	binary.Write(buf, binary.LittleEndian, uint32(len(vendor)))
+	buf.WriteString(vendor)
+	binary.Write(buf, binary.LittleEndian, uint32(0)) // no user comments
+	return buf.Bytes()
+}
+
+func writeOggPage(w io.Writer, data []byte, granulePos uint64, pageSeq uint32, bos, eos bool) error {
+	buf := new(bytes.Buffer)
+
+	// Capture pattern
+	buf.WriteString("OggS")
+
+	// Stream structure version
+	buf.WriteByte(0)
+
+	// Header type flag
+	flags := byte(0)
+	if bos {
+		flags |= 0x02
+	}
+	if eos {
+		flags |= 0x04
+	}
+	buf.WriteByte(flags)
+
+	// Granule position
+	binary.Write(buf, binary.LittleEndian, granulePos)
+
+	// Bitstream serial number
+	binary.Write(buf, binary.LittleEndian, uint32(1))
+
+	// Page sequence number
+	binary.Write(buf, binary.LittleEndian, pageSeq)
+
+	// CRC checksum (placeholder)
+	crcPos := buf.Len()
+	binary.Write(buf, binary.LittleEndian, uint32(0))
+
+	// Number of page segments
+	numSegments := (len(data) + 254) / 255
+	if numSegments == 0 {
+		numSegments = 1
+	}
+	buf.WriteByte(byte(numSegments))
+
+	// Segment table
+	remaining := len(data)
+	for i := 0; i < numSegments; i++ {
+		if remaining >= 255 {
+			buf.WriteByte(255)
+			remaining -= 255
+		} else {
+			buf.WriteByte(byte(remaining))
+			remaining = 0
+		}
+	}
+
+	// Payload
+	buf.Write(data)
+
+	// Calculate CRC
+	pageData := buf.Bytes()
+	crc := oggCRC32(pageData)
+	binary.LittleEndian.PutUint32(pageData[crcPos:], crc)
+
+	_, err := w.Write(pageData)
+	return err
+}
+
+// oggCRCTable is the CRC32 lookup table for Ogg pages.
+var oggCRCTable = func() [256]uint32 {
+	const poly = 0x04c11db7
+	var table [256]uint32
+	for i := 0; i < 256; i++ {
+		r := uint32(i) << 24
+		for j := 0; j < 8; j++ {
+			if r&0x80000000 != 0 {
+				r = (r << 1) ^ poly
+			} else {
+				r <<= 1
+			}
+		}
+		table[i] = r
+	}
+	return table
+}()
+
+func oggCRC32(data []byte) uint32 {
+	crc := uint32(0)
+	for _, b := range data {
+		crc = (crc << 8) ^ oggCRCTable[byte(crc>>24)^b]
+	}
+	return crc
 }
