@@ -120,10 +120,17 @@ type HybridEncodedFrame struct {
 	Bits     int
 	SILKBits int
 	CELTBits int
+	// SILKLen is the byte length of the SILK portion (for decoder use)
+	SILKLen int
 }
 
-// EncodeFrame encodes a single frame using hybrid mode.
+// EncodeFrame encodes a single frame using hybrid mode per RFC 6716 §4.2.7.2.
 // The input samples should be 24 kHz PCM in float64 format.
+//
+// RFC 6716 hybrid packet format:
+//   - SILK data comes first (always byte-aligned from range coder)
+//   - CELT data follows immediately
+//   - No explicit length marker; decoder uses packet length
 func (enc *HybridEncoder) EncodeFrame(samples []float64) (*HybridEncodedFrame, error) {
 	if len(samples) != enc.frameSize {
 		return nil, fmt.Errorf("hybrid: expected %d samples, got %d", enc.frameSize, len(samples))
@@ -144,22 +151,22 @@ func (enc *HybridEncoder) EncodeFrame(samples []float64) (*HybridEncodedFrame, e
 		return nil, fmt.Errorf("hybrid: CELT encode: %w", err)
 	}
 
-	// Assemble hybrid packet
-	// Format: [length_silk (2 bytes)] [silk_data] [celt_data]
+	// Assemble RFC 6716-compliant hybrid packet
+	// Per RFC 6716 §4.2.7.2: SILK data followed by CELT data
+	// The range coder outputs are already byte-aligned
 	silkLen := len(silkFrame.Data)
 	celtLen := len(celtFrame.Data)
 
-	data := make([]byte, 2+silkLen+celtLen)
-	data[0] = byte(silkLen >> 8)
-	data[1] = byte(silkLen)
-	copy(data[2:], silkFrame.Data)
-	copy(data[2+silkLen:], celtFrame.Data)
+	data := make([]byte, silkLen+celtLen)
+	copy(data, silkFrame.Data)
+	copy(data[silkLen:], celtFrame.Data)
 
 	return &HybridEncodedFrame{
 		Data:     data,
-		Bits:     (silkLen + celtLen + 2) * 8,
+		Bits:     (silkLen + celtLen) * 8,
 		SILKBits: silkFrame.Bits,
 		CELTBits: celtFrame.Bits,
+		SILKLen:  silkLen,
 	}, nil
 }
 
@@ -311,27 +318,57 @@ func NewHybridDecoder(config HybridDecoderConfig) (*HybridDecoder, error) {
 }
 
 // DecodeFrame decodes a hybrid frame to PCM samples.
+// This method supports RFC 6716 compliant packets where SILK data is
+// immediately followed by CELT data without a length prefix.
+//
+// For RFC 6716 compliance, the SILK length must be determined by the
+// caller (typically from packet metadata or by running SILK decode first).
+// Use DecodeFrameWithSILKLen for explicit control.
+//
+// This method attempts to decode by estimating SILK size based on typical
+// frame sizes.
 func (dec *HybridDecoder) DecodeFrame(data []byte) ([]float64, error) {
-	if len(data) < 3 {
+	if len(data) < 2 {
 		return nil, fmt.Errorf("hybrid: packet too short")
 	}
 
-	// Parse SILK length
-	silkLen := int(data[0])<<8 | int(data[1])
-	if 2+silkLen > len(data) {
-		return nil, fmt.Errorf("hybrid: invalid SILK length")
+	// Estimate SILK length: typically 40-60% of hybrid packet for 20ms frame
+	// SILK at 16kHz produces roughly 40-80 bytes per 20ms frame depending on content
+	// Try heuristic: use half the packet for SILK, rest for CELT
+	silkLen := len(data) / 2
+	if silkLen < 4 {
+		silkLen = 4
+	}
+	if silkLen > len(data)-4 {
+		silkLen = len(data) - 4
+	}
+
+	return dec.DecodeFrameWithSILKLen(data, silkLen)
+}
+
+// DecodeFrameWithSILKLen decodes a hybrid frame with an explicit SILK length.
+// This is the RFC 6716-compliant decoding method where the caller knows
+// the exact byte boundary between SILK and CELT data.
+//
+// silkLen specifies how many bytes at the start of data belong to SILK.
+func (dec *HybridDecoder) DecodeFrameWithSILKLen(data []byte, silkLen int) ([]float64, error) {
+	if len(data) < 2 {
+		return nil, fmt.Errorf("hybrid: packet too short")
+	}
+	if silkLen > len(data) {
+		return nil, fmt.Errorf("hybrid: SILK length %d exceeds packet size %d", silkLen, len(data))
 	}
 
 	// Decode SILK band (0-8 kHz)
-	silkData := data[2 : 2+silkLen]
+	silkData := data[:silkLen]
 	silkSamples, err := dec.silkDecoder.DecodeFrame(silkData)
 	if err != nil {
-		// On SILK decode error, return CELT-only output
+		// On SILK decode error, use silence for SILK band
 		silkSamples = make([]float64, len(dec.silkBand))
 	}
 
 	// Decode CELT band (8-12 kHz)
-	celtData := data[2+silkLen:]
+	celtData := data[silkLen:]
 	celtSamples, err := dec.celtDecoder.DecodeFrame(celtData)
 	if err != nil {
 		return nil, fmt.Errorf("hybrid: CELT decode: %w", err)

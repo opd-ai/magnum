@@ -201,3 +201,9 @@ func (d *RangeDecoder) normalize() {
 func (d *RangeDecoder) Remaining() int {
 	return len(d.data) - d.pos
 }
+
+// BytesConsumed returns the number of bytes consumed from the input so far.
+// This is useful for hybrid mode to determine where SILK data ends.
+func (d *RangeDecoder) BytesConsumed() int {
+	return d.pos
+}

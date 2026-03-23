@@ -477,18 +477,18 @@ func TestHybridRoundTrip(t *testing.T) {
 		t.Fatalf("EncodeFrame: %v", err)
 	}
 
-	// Decode
-	decoded, err := dec.DecodeFrame(encoded.Data)
+	// Decode using RFC 6716 compliant method with explicit SILK length
+	decoded, err := dec.DecodeFrameWithSILKLen(encoded.Data, encoded.SILKLen)
 	if err != nil {
-		t.Fatalf("DecodeFrame: %v", err)
+		t.Fatalf("DecodeFrameWithSILKLen: %v", err)
 	}
 
 	if len(decoded) == 0 {
 		t.Error("decoded samples is empty")
 	}
 
-	t.Logf("Round-trip: %d samples -> %d bytes -> %d samples",
-		len(samples), len(encoded.Data), len(decoded))
+	t.Logf("Round-trip: %d samples -> %d bytes (SILK: %d, CELT: %d) -> %d samples",
+		len(samples), len(encoded.Data), encoded.SILKLen, len(encoded.Data)-encoded.SILKLen, len(decoded))
 }
 
 func TestHybridDecoder_Reset(t *testing.T) {

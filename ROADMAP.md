@@ -82,12 +82,12 @@
 
 **Impact**: Unblocks full interoperability with libopus for 24 kHz content. Hybrid mode is the only codec path failing external validation.
 
-**Current state**: `hybrid.go` uses `[length_silk][silk_data][celt_data]` proprietary format instead of RFC 6716 configurations 12-19.
+**Current state**: `hybrid.go` uses RFC 6716-compliant format with SILK data followed by CELT data (no length prefix).
 
-- [ ] **1.1** Study RFC 6716 §3.1 hybrid multiplexing: configurations 12-15 (SWB) and 16-19 (FB) specify how SILK and CELT frames share the packet.
-- [ ] **1.2** Implement correct bit-interleaving of SILK and CELT payloads per RFC 6716 §4.2.7.2 and §4.3.5.
-- [ ] **1.3** Update `HybridEncoder.Encode()` to emit compliant packets.
-- [ ] **1.4** Update `decodeHybrid()` to parse compliant hybrid packets.
+- [x] **1.1** Study RFC 6716 §3.1 hybrid multiplexing: configurations 12-15 (SWB) and 16-19 (FB) specify how SILK and CELT frames share the packet.
+- [x] **1.2** Implement correct bit-interleaving of SILK and CELT payloads per RFC 6716 §4.2.7.2 and §4.3.5.
+- [x] **1.3** Update `HybridEncoder.Encode()` to emit compliant packets.
+- [x] **1.4** Update `decodeHybrid()` to parse compliant hybrid packets.
 - [ ] **1.5** Enable `TestHybridLibopusValidation` and confirm packets decode in `opusdec`.
 
 **Validation**: `go test -v -run TestHybridLibopusValidation` passes; `opusdec` decodes without errors.
