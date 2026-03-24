@@ -106,12 +106,12 @@ The 24 kHz path has notably higher allocations (98 vs 3) and latency, indicating
 
 **Impact**: High — completes the libopus interoperability story for all codec paths.
 
-**Current state**: `TestHybridLibopusValidation` passes internal round-trip but does not invoke `opusdec` for external validation.
+**Current state**: `TestHybridLibopusValidation` now invokes `opusdec` for external validation.
 
-- [ ] **1.1** Add `opusdec` validation to `TestHybridLibopusValidation` matching the pattern in `TestCELTLibopusValidation`.
-- [ ] **1.2** If `opusdec` fails, analyze packet structure differences against RFC 6716 §4.2.7.2 (SILK in hybrid) and §4.3.5 (CELT in hybrid).
-- [ ] **1.3** Fix any packet format issues discovered.
-- [ ] **1.4** Confirm all hybrid test packets decode successfully in `opusdec`.
+- [x] **1.1** Add `opusdec` validation to `TestHybridLibopusValidation` matching the pattern in `TestCELTLibopusValidation`.
+- [x] **1.2** If `opusdec` fails, analyze packet structure differences against RFC 6716 §4.2.7.2 (SILK in hybrid) and §4.3.5 (CELT in hybrid).
+- [x] **1.3** Fix any packet format issues discovered.
+- [x] **1.4** Confirm all hybrid test packets decode successfully in `opusdec`.
 
 **Validation**: `go test -v -run TestHybridLibopusValidation` invokes `opusdec` and reports success.
 

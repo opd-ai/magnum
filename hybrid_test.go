@@ -1,7 +1,12 @@
 package magnum
 
 import (
+	"bytes"
+	"encoding/binary"
+	"io"
 	"math"
+	"os"
+	"os/exec"
 	"testing"
 )
 
@@ -516,13 +521,19 @@ func TestHybridDecoder_Reset(t *testing.T) {
 // by libopus (via opusdec). This test requires the opus-tools package to be
 // installed and is skipped if opusdec is not available.
 //
-// This test fulfills ROADMAP Priority 1.5: "Enable TestHybridLibopusValidation."
-//
-// NOTE: Full libopus interoperability requires exact bit-level compliance with
-// RFC 6716 §4.2.7.2 (SILK) and §4.3.5 (CELT) for hybrid mode. This test validates
-// the basic packet structure and internal round-trip. Full opusdec validation
-// is aspirational pending complete RFC 6716 conformance.
+// This test fulfills ROADMAP Priority 1.1: "Add opusdec validation to
+// TestHybridLibopusValidation matching the pattern in TestCELTLibopusValidation."
 func TestHybridLibopusValidation(t *testing.T) {
+	// Skip if opusdec is not available
+	if _, err := exec.LookPath("opusdec"); err != nil {
+		t.Skip("opusdec not available; install opus-tools to run this test")
+	}
+
+	// Create temporary directory for test files
+	tmpDir := t.TempDir()
+	oggFile := tmpDir + "/hybrid_test.opus"
+	wavFile := tmpDir + "/hybrid_test.wav"
+
 	// Create encoder
 	encConfig := HybridEncoderConfig{
 		SampleRate: 24000,
@@ -534,7 +545,7 @@ func TestHybridLibopusValidation(t *testing.T) {
 		t.Fatalf("NewHybridEncoder: %v", err)
 	}
 
-	// Create decoder
+	// Create decoder for internal round-trip verification
 	decConfig := HybridDecoderConfig{
 		SampleRate: 24000,
 		Channels:   1,
@@ -559,7 +570,7 @@ func TestHybridLibopusValidation(t *testing.T) {
 	}
 
 	// Encode all frames
-	var packets []*HybridEncodedFrame
+	var hybridFrames []*HybridEncodedFrame
 	for i := 0; i < len(pcm); i += frameSize {
 		end := i + frameSize
 		if end > len(pcm) {
@@ -569,15 +580,15 @@ func TestHybridLibopusValidation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EncodeFrame %d: %v", i/frameSize, err)
 		}
-		packets = append(packets, frame)
+		hybridFrames = append(hybridFrames, frame)
 	}
 
-	if len(packets) == 0 {
+	if len(hybridFrames) == 0 {
 		t.Fatal("No packets encoded")
 	}
 
 	// Verify packet structure
-	for i, pkt := range packets {
+	for i, pkt := range hybridFrames {
 		if len(pkt.Data) == 0 {
 			t.Errorf("Packet %d has empty data", i)
 		}
@@ -591,7 +602,7 @@ func TestHybridLibopusValidation(t *testing.T) {
 
 	// Verify round-trip decoding
 	var totalDecoded int
-	for i, pkt := range packets {
+	for i, pkt := range hybridFrames {
 		decoded, err := dec.DecodeFrameWithSILKLen(pkt.Data, pkt.SILKLen)
 		if err != nil {
 			t.Fatalf("DecodeFrame %d: %v", i, err)
@@ -599,19 +610,59 @@ func TestHybridLibopusValidation(t *testing.T) {
 		totalDecoded += len(decoded)
 	}
 
-	t.Logf("RFC 6716 hybrid format validation:")
-	t.Logf("  - Encoded %d packets (total %d bytes)", len(packets), sumPacketBytes(packets))
-	t.Logf("  - Average packet size: %d bytes", sumPacketBytes(packets)/len(packets))
+	t.Logf("Internal round-trip validation:")
+	t.Logf("  - Encoded %d packets (total %d bytes)", len(hybridFrames), sumPacketBytes(hybridFrames))
+	t.Logf("  - Average packet size: %d bytes", sumPacketBytes(hybridFrames)/len(hybridFrames))
 	t.Logf("  - Round-trip decoded %d samples", totalDecoded)
-	t.Logf("  - Packet format: [SILK data][CELT data] (no length prefix)")
 
-	// Verify TOC header for hybrid mode
+	// Build complete Opus packets with TOC headers for opusdec validation
 	// Configuration 13 = Hybrid SWB 20ms
-	expectedConfig := Configuration(13)
 	stereo := false
-	toc := newTOCHeader(expectedConfig, stereo, frameCodeOneFrame)
-	t.Logf("  - Expected TOC for hybrid SWB 20ms mono: 0x%02x (config=%d, stereo=%v, code=0)",
-		byte(toc), expectedConfig, stereo)
+	toc := newTOCHeader(ConfigurationHybridSWB20ms, stereo, frameCodeOneFrame)
+	t.Logf("  - TOC header: 0x%02x (config=%d, stereo=%v, code=0)",
+		byte(toc), ConfigurationHybridSWB20ms, stereo)
+
+	// Create packets with TOC headers for Ogg Opus file
+	packets := make([][]byte, len(hybridFrames))
+	for i, frame := range hybridFrames {
+		// Build packet: [TOC byte][SILK data][CELT data]
+		packet := make([]byte, 1+len(frame.Data))
+		packet[0] = byte(toc)
+		copy(packet[1:], frame.Data)
+		packets[i] = packet
+	}
+
+	// Write to Ogg Opus file using 24kHz sample rate
+	if err := writeOggOpusFile24k(oggFile, packets, sampleRate); err != nil {
+		t.Fatalf("writeOggOpusFile24k: %v", err)
+	}
+
+	// Decode with opusdec
+	cmd := exec.Command("opusdec", oggFile, wavFile)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Log packet details for debugging
+		if len(packets) > 0 {
+			tocByte := packets[0][0]
+			t.Logf("First packet TOC: 0x%02x (config=%d, stereo=%d, code=%d)",
+				tocByte, (tocByte>>3)&0x1F, (tocByte>>2)&0x01, tocByte&0x03)
+			t.Logf("First packet size: %d bytes", len(packets[0]))
+			t.Logf("First frame SILK len: %d, total payload: %d",
+				hybridFrames[0].SILKLen, len(hybridFrames[0].Data))
+		}
+		t.Fatalf("opusdec failed: %v\nOutput: %s", err, output)
+	}
+
+	// Verify WAV file was created
+	info, err := os.Stat(wavFile)
+	if err != nil {
+		t.Fatalf("WAV file not created: %v", err)
+	}
+	if info.Size() < 1000 {
+		t.Errorf("WAV file too small: %d bytes", info.Size())
+	}
+
+	t.Logf("Successfully validated %d hybrid packets with libopus (opusdec)", len(packets))
 }
 
 // sumPacketBytes returns the total byte count across all packets.
@@ -621,4 +672,151 @@ func sumPacketBytes(packets []*HybridEncodedFrame) int {
 		total += len(p.Data)
 	}
 	return total
+}
+
+// writeOggOpusFile24k writes Opus packets to an Ogg container file for 24kHz audio.
+// This is specifically for hybrid mode validation at 24kHz.
+func writeOggOpusFile24k(filename string, packets [][]byte, sampleRate int) error {
+	f, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// ID Header page
+	idHeader := createOpusIDHeader24k(1, sampleRate)
+	if err := writeOggPage24k(f, idHeader, 0, 0, true, false); err != nil {
+		return err
+	}
+
+	// Comment Header page
+	commentHeader := createOpusCommentHeader24k()
+	if err := writeOggPage24k(f, commentHeader, 0, 1, false, false); err != nil {
+		return err
+	}
+
+	// Audio data pages - granule position increments by samples per frame
+	// For 24kHz, 20ms = 480 samples, but Opus always reports granule at 48kHz
+	// So 20ms at 48kHz = 960 samples for granule position
+	granulePos := uint64(0)
+	for i, pkt := range packets {
+		granulePos += 960 // 20ms at 48kHz (Opus internal rate)
+		isLast := i == len(packets)-1
+		if err := writeOggPage24k(f, pkt, granulePos, uint32(i+2), false, isLast); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func createOpusIDHeader24k(channels, sampleRate int) []byte {
+	buf := new(bytes.Buffer)
+	buf.WriteString("OpusHead")
+	buf.WriteByte(1)                                           // version
+	buf.WriteByte(byte(channels))                              // channel count
+	binary.Write(buf, binary.LittleEndian, uint16(0))          // pre-skip
+	binary.Write(buf, binary.LittleEndian, uint32(sampleRate)) // input sample rate
+	binary.Write(buf, binary.LittleEndian, int16(0))           // output gain
+	buf.WriteByte(0)                                           // channel mapping family
+	return buf.Bytes()
+}
+
+func createOpusCommentHeader24k() []byte {
+	buf := new(bytes.Buffer)
+	buf.WriteString("OpusTags")
+	vendor := "magnum"
+	binary.Write(buf, binary.LittleEndian, uint32(len(vendor)))
+	buf.WriteString(vendor)
+	binary.Write(buf, binary.LittleEndian, uint32(0)) // no user comments
+	return buf.Bytes()
+}
+
+// oggCRCTable24k is the CRC32 lookup table for Ogg pages.
+var oggCRCTable24k = func() [256]uint32 {
+	const poly = 0x04c11db7
+	var table [256]uint32
+	for i := 0; i < 256; i++ {
+		r := uint32(i) << 24
+		for j := 0; j < 8; j++ {
+			if r&0x80000000 != 0 {
+				r = (r << 1) ^ poly
+			} else {
+				r <<= 1
+			}
+		}
+		table[i] = r
+	}
+	return table
+}()
+
+func oggCRC32For24k(data []byte) uint32 {
+	crc := uint32(0)
+	for _, b := range data {
+		crc = (crc << 8) ^ oggCRCTable24k[byte(crc>>24)^b]
+	}
+	return crc
+}
+
+func writeOggPage24k(w io.Writer, data []byte, granulePos uint64, pageSeq uint32, bos, eos bool) error {
+	buf := new(bytes.Buffer)
+
+	// Capture pattern
+	buf.WriteString("OggS")
+
+	// Stream structure version
+	buf.WriteByte(0)
+
+	// Header type flag
+	flags := byte(0)
+	if bos {
+		flags |= 0x02
+	}
+	if eos {
+		flags |= 0x04
+	}
+	buf.WriteByte(flags)
+
+	// Granule position
+	binary.Write(buf, binary.LittleEndian, granulePos)
+
+	// Bitstream serial number
+	binary.Write(buf, binary.LittleEndian, uint32(1))
+
+	// Page sequence number
+	binary.Write(buf, binary.LittleEndian, pageSeq)
+
+	// CRC checksum (placeholder)
+	crcPos := buf.Len()
+	binary.Write(buf, binary.LittleEndian, uint32(0))
+
+	// Number of page segments
+	numSegments := (len(data) + 254) / 255
+	if numSegments == 0 {
+		numSegments = 1
+	}
+	buf.WriteByte(byte(numSegments))
+
+	// Segment table
+	remaining := len(data)
+	for i := 0; i < numSegments; i++ {
+		if remaining >= 255 {
+			buf.WriteByte(255)
+			remaining -= 255
+		} else {
+			buf.WriteByte(byte(remaining))
+			remaining = 0
+		}
+	}
+
+	// Payload
+	buf.Write(data)
+
+	// Calculate CRC
+	pageData := buf.Bytes()
+	crc := oggCRC32For24k(pageData)
+	binary.LittleEndian.PutUint32(pageData[crcPos:], crc)
+
+	_, err := w.Write(pageData)
+	return err
 }
