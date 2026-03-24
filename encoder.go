@@ -408,7 +408,7 @@ func validateFrameDuration(sampleRate int, duration FrameDuration) error {
 	case SampleRate24k, SampleRate48k:
 		// CELT mode: 2.5, 5, 10, 20 ms
 		switch duration {
-		case FrameDuration2_5ms, FrameDuration5ms, FrameDuration10ms, FrameDuration20ms:
+		case FrameDuration2p5ms, FrameDuration5ms, FrameDuration10ms, FrameDuration20ms:
 			return nil
 		default:
 			return fmt.Errorf("magnum: frame duration %.1fms not supported for %d Hz (CELT supports 2.5, 5, 10, 20 ms)", duration.Milliseconds(), sampleRate)

@@ -1569,7 +1569,7 @@ func TestSetFrameDuration(t *testing.T) {
 		{"8kHz 20ms", 8000, FrameDuration20ms, false, 160},
 		{"8kHz 40ms", 8000, FrameDuration40ms, false, 320},
 		{"8kHz 60ms", 8000, FrameDuration60ms, false, 480},
-		{"8kHz 2.5ms unsupported", 8000, FrameDuration2_5ms, true, 0},
+		{"8kHz 2.5ms unsupported", 8000, FrameDuration2p5ms, true, 0},
 		{"8kHz 5ms unsupported", 8000, FrameDuration5ms, true, 0},
 		{"16kHz 10ms", 16000, FrameDuration10ms, false, 160},
 		{"16kHz 20ms", 16000, FrameDuration20ms, false, 320},
@@ -1577,13 +1577,13 @@ func TestSetFrameDuration(t *testing.T) {
 		{"16kHz 60ms", 16000, FrameDuration60ms, false, 960},
 
 		// CELT (24kHz, 48kHz): 2.5, 5, 10, 20 ms supported
-		{"24kHz 2.5ms", 24000, FrameDuration2_5ms, false, 60},
+		{"24kHz 2.5ms", 24000, FrameDuration2p5ms, false, 60},
 		{"24kHz 5ms", 24000, FrameDuration5ms, false, 120},
 		{"24kHz 10ms", 24000, FrameDuration10ms, false, 240},
 		{"24kHz 20ms", 24000, FrameDuration20ms, false, 480},
 		{"24kHz 40ms unsupported", 24000, FrameDuration40ms, true, 0},
 		{"24kHz 60ms unsupported", 24000, FrameDuration60ms, true, 0},
-		{"48kHz 2.5ms", 48000, FrameDuration2_5ms, false, 120},
+		{"48kHz 2.5ms", 48000, FrameDuration2p5ms, false, 120},
 		{"48kHz 5ms", 48000, FrameDuration5ms, false, 240},
 		{"48kHz 10ms", 48000, FrameDuration10ms, false, 480},
 		{"48kHz 20ms", 48000, FrameDuration20ms, false, 960},
@@ -1697,7 +1697,7 @@ func TestFrameDurationMilliseconds(t *testing.T) {
 		duration FrameDuration
 		want     float64
 	}{
-		{FrameDuration2_5ms, 2.5},
+		{FrameDuration2p5ms, 2.5},
 		{FrameDuration5ms, 5.0},
 		{FrameDuration10ms, 10.0},
 		{FrameDuration20ms, 20.0},
@@ -1721,7 +1721,7 @@ func TestFrameDurationSamples(t *testing.T) {
 		sampleRate int
 		want       int
 	}{
-		{FrameDuration2_5ms, 48000, 120},
+		{FrameDuration2p5ms, 48000, 120},
 		{FrameDuration5ms, 48000, 240},
 		{FrameDuration10ms, 48000, 480},
 		{FrameDuration20ms, 48000, 960},

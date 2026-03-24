@@ -23,8 +23,9 @@ const (
 type FrameDuration float64
 
 const (
-	// FrameDuration2_5ms is 2.5 ms frame duration (CELT only).
-	FrameDuration2_5ms FrameDuration = 2.5
+	// FrameDuration2p5ms is 2.5 ms frame duration (CELT only).
+	// The "2p5" naming follows Go conventions for fractional values.
+	FrameDuration2p5ms FrameDuration = 2.5
 	// FrameDuration5ms is 5 ms frame duration (CELT only).
 	FrameDuration5ms FrameDuration = 5
 	// FrameDuration10ms is 10 ms frame duration (SILK, CELT, Hybrid).
@@ -193,7 +194,7 @@ func configForSampleRateAndDuration(sampleRate int, duration FrameDuration) Conf
 		// CELT SWB (configurations 24-27) for short durations
 		// Hybrid SWB (configurations 12-13) for 10/20ms - but we use CELT
 		switch duration {
-		case FrameDuration2_5ms:
+		case FrameDuration2p5ms:
 			return 24
 		case FrameDuration5ms:
 			return 25
@@ -207,7 +208,7 @@ func configForSampleRateAndDuration(sampleRate int, duration FrameDuration) Conf
 	case SampleRate48k:
 		// CELT FB (configurations 28-31)
 		switch duration {
-		case FrameDuration2_5ms:
+		case FrameDuration2p5ms:
 			return 28
 		case FrameDuration5ms:
 			return 29
@@ -304,7 +305,7 @@ func frameDurationForConfig(config Configuration) FrameDuration {
 		// CELT: 2.5, 5, 10, 20 ms
 		switch index {
 		case 0:
-			return FrameDuration2_5ms
+			return FrameDuration2p5ms
 		case 1:
 			return FrameDuration5ms
 		case 2:

@@ -168,7 +168,7 @@ The 24 kHz path has notably higher allocations (98 vs 3) and latency, indicating
 **Current state**: 94.9% documentation coverage; 3 identifier naming violations; package name doesn't match directory.
 
 - [ ] **5.1** Add doc comments to undocumented types (5.9% missing).
-- [ ] **5.2** Rename `FrameDuration2_5ms` to follow Go naming conventions (e.g., `FrameDuration2p5ms`).
+- [x] **5.2** Rename `FrameDuration2_5ms` to follow Go naming conventions (e.g., `FrameDuration2p5ms`).
 - [ ] **5.3** Consider renaming package to `opus` if directory is renamed, or document why `magnum` is preferred.
 
 **Validation**: `go-stats-generator analyze . --skip-tests` shows 100% documentation coverage and no naming violations.
