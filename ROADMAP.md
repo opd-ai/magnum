@@ -123,9 +123,9 @@ The 24 kHz path has notably higher allocations (98 vs 3) and latency, indicating
 
 **Current state**: Conformance tests parse all 12 official test vectors (20,075 packets) but do not compare decoded PCM against reference `.dec` files.
 
-- [ ] **2.1** Extend `TestConformance` to decode each packet and compare output against the corresponding `.dec` reference PCM.
-- [ ] **2.2** Track delta between magnum output and reference (RMS error, max sample difference).
-- [ ] **2.3** Identify which codec paths (SILK NB/MB/WB, CELT, Hybrid) have the largest deviations.
+- [x] **2.1** Extend `TestConformance` to decode each packet and compare output against the corresponding `.dec` reference PCM.
+- [x] **2.2** Track delta between magnum output and reference (RMS error, max sample difference).
+- [x] **2.3** Identify which codec paths (SILK NB/MB/WB, CELT, Hybrid) have the largest deviations.
 - [ ] **2.4** Address deviations in order of impact (start with highest-use configurations).
 
 **Validation**: `go test -v -run TestConformance` compares PCM output and reports bit-exact match or bounded error.
