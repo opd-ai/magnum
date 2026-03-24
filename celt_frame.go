@@ -46,6 +46,12 @@ type CELTFrameEncoder struct {
 
 	// Frame counters for intra/inter decisions
 	frameCount int
+
+	// Reusable working buffers to reduce allocations
+	mdctCoeffs []float64 // MDCT output buffer (frameSize/2)
+	normCoeffs []float64 // Normalized coefficients buffer
+	pvqPulses  []int     // PVQ pulse buffer (max band size)
+	pvqSigns   []int     // PVQ signs buffer (max band size)
 }
 
 // NewCELTFrameEncoder creates a new CELT frame encoder.
@@ -69,6 +75,10 @@ func NewCELTFrameEncoder(config CELTFrameConfig) (*CELTFrameEncoder, error) {
 		return nil, ErrInvalidFrameSize
 	}
 
+	// Determine maximum band size for buffer allocation
+	// CELT bands range from 1 to ~192 coefficients; allocate for largest
+	maxBandSize := config.FrameSize / 2 // Safe upper bound
+
 	return &CELTFrameEncoder{
 		config:     config,
 		mdct:       mdct,
@@ -78,6 +88,11 @@ func NewCELTFrameEncoder(config CELTFrameConfig) (*CELTFrameEncoder, error) {
 		tf:         NewTFAnalyzer(NumCELTBands),
 		prevMDCT:   make([]float64, config.FrameSize),
 		frameCount: 0,
+		// Pre-allocate working buffers
+		mdctCoeffs: make([]float64, config.FrameSize/2),
+		normCoeffs: make([]float64, maxBandSize),
+		pvqPulses:  make([]int, maxBandSize),
+		pvqSigns:   make([]int, maxBandSize),
 	}, nil
 }
 
@@ -120,9 +135,9 @@ func (enc *CELTFrameEncoder) EncodeFrame(samples []float64) (*CELTEncodedFrame, 
 	}
 	rc.EncodeBits(0, 1)
 
-	// Compute spectral representation
-	mdctCoeffs := enc.mdct.Forward(samples)
-	bandEnergy := ComputeBandEnergy(mdctCoeffs)
+	// Compute spectral representation using pre-allocated buffer
+	enc.mdct.ForwardInto(samples, enc.mdctCoeffs)
+	bandEnergy := ComputeBandEnergy(enc.mdctCoeffs)
 	isTransient := detectTransient(samples, enc.prevMDCT)
 
 	// Encode frame flags
@@ -132,16 +147,16 @@ func (enc *CELTFrameEncoder) EncodeFrame(samples []float64) (*CELTEncodedFrame, 
 	quantizedEnergy := enc.encodeCoarseEnergy(rc, bandEnergy, isIntra)
 
 	// Encode TF and spreading
-	enc.encodeTFAndSpreading(rc, bandEnergy, mdctCoeffs)
+	enc.encodeTFAndSpreading(rc, bandEnergy, enc.mdctCoeffs)
 
 	// Encode spectral coefficients with PVQ
-	enc.encodePVQBands(rc, mdctCoeffs, bandEnergy)
+	enc.encodePVQBands(rc, enc.mdctCoeffs, bandEnergy)
 
 	// Encode fine energy
 	enc.encodeFineEnergy(rc, quantizedEnergy)
 
 	// Update state for next frame
-	copy(enc.prevMDCT, mdctCoeffs)
+	copy(enc.prevMDCT, enc.mdctCoeffs)
 	enc.frameCount++
 
 	return &CELTEncodedFrame{
@@ -210,7 +225,9 @@ func (enc *CELTFrameEncoder) encodePVQBands(rc *RangeEncoder, mdctCoeffs []float
 	bandBits := AllocateBandBits(pvqBits, NumCELTBands, bandEnergy,
 		enc.config.Bitrate, enc.config.SampleRate, enc.config.FrameSize)
 
-	normalizedCoeffs := normalizeSpectrum(mdctCoeffs, bandEnergy)
+	// Use pre-allocated buffer for normalized coefficients
+	normalizeSpectrumInto(mdctCoeffs, bandEnergy, enc.normCoeffs)
+	normalizedCoeffs := enc.normCoeffs[:spectrumSize]
 	spreadMode := enc.spread.Analyze(mdctCoeffs, NumCELTBands)
 
 	for i := 0; i < NumCELTBands; i++ {
@@ -233,8 +250,8 @@ func (enc *CELTFrameEncoder) encodePVQBand(rc *RangeEncoder, normalizedCoeffs []
 		return
 	}
 
-	bandCoeffs := make([]float64, n)
-	copy(bandCoeffs, normalizedCoeffs[starts[bandIdx]:ends[bandIdx]])
+	// Use slice reference instead of allocating a new buffer
+	bandCoeffs := normalizedCoeffs[starts[bandIdx]:ends[bandIdx]]
 
 	k := enc.pvq.SelectK(n, bandBits[bandIdx])
 	if k == 0 {
@@ -242,12 +259,13 @@ func (enc *CELTFrameEncoder) encodePVQBand(rc *RangeEncoder, normalizedCoeffs []
 	}
 
 	rc.EncodeBits(uint32(k), 5)
-	cw := enc.pvq.Encode(bandCoeffs, k)
+	// Use EncodeIndex to avoid PVQCodeword allocation
+	index := enc.pvq.EncodeIndex(bandCoeffs, k, enc.pvqPulses[:n], enc.pvqSigns[:n])
 
 	v := enc.pvq.V(n, k)
 	if v > 1 {
 		bits := enc.pvq.BitsRequired(n, k)
-		rc.EncodeBits(uint32(cw.Index), uint32(bits))
+		rc.EncodeBits(uint32(index), uint32(bits))
 	}
 }
 
@@ -506,7 +524,17 @@ func allocateBandBits(totalBits, numBands int, energy *BandEnergy) []int {
 func normalizeSpectrum(mdctCoeffs []float64, energy *BandEnergy) []float64 {
 	n := len(mdctCoeffs)
 	normalized := make([]float64, n)
-	copy(normalized, mdctCoeffs)
+	normalizeSpectrumInto(mdctCoeffs, energy, normalized)
+	return normalized
+}
+
+// normalizeSpectrumInto performs spectrum normalization into a pre-allocated buffer.
+func normalizeSpectrumInto(mdctCoeffs []float64, energy *BandEnergy, out []float64) {
+	n := len(mdctCoeffs)
+	if len(out) < n {
+		return
+	}
+	copy(out[:n], mdctCoeffs)
 
 	starts, ends := ScaledBandBoundaries(n)
 
@@ -524,19 +552,17 @@ func normalizeSpectrum(mdctCoeffs []float64, energy *BandEnergy) []float64 {
 		// Compute band energy
 		bandSum := 0.0
 		for j := start; j < end; j++ {
-			bandSum += normalized[j] * normalized[j]
+			bandSum += out[j] * out[j]
 		}
 
 		// Normalize to unit energy
 		if bandSum > 1e-10 {
 			scale := 1.0 / math.Sqrt(bandSum)
 			for j := start; j < end; j++ {
-				normalized[j] *= scale
+				out[j] *= scale
 			}
 		}
 	}
-
-	return normalized
 }
 
 func denormalizeSpectrum(normalizedCoeffs, bandEnergy []float64, frameSize int) []float64 {

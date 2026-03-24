@@ -118,6 +118,29 @@ func (p *PVQ) Encode(x []float64, k int) *PVQCodeword {
 		return &PVQCodeword{N: n, K: 0, Pulses: make([]int, n), Signs: make([]int, n)}
 	}
 
+	pulses := make([]int, n)
+	signs := make([]int, n)
+	return p.encodeWithBuffers(x, k, pulses, signs)
+}
+
+// EncodeInto encodes a unit-norm vector using pre-allocated buffers.
+// The pulses and signs slices must have length >= len(x).
+func (p *PVQ) EncodeInto(x []float64, k int, pulses, signs []int) *PVQCodeword {
+	n := len(x)
+	if n == 0 || k == 0 {
+		return &PVQCodeword{N: n, K: 0, Pulses: pulses[:n], Signs: signs[:n]}
+	}
+	return p.encodeWithBuffers(x, k, pulses[:n], signs[:n])
+}
+
+// EncodeIndex encodes a vector and returns only the combinatoric index.
+// This avoids allocating a PVQCodeword when only the index is needed.
+func (p *PVQ) EncodeIndex(x []float64, k int, pulses, signs []int) uint64 {
+	n := len(x)
+	if n == 0 || k == 0 {
+		return 0
+	}
+
 	// Normalize input to unit L2 norm
 	norm := 0.0
 	for i := 0; i < n; i++ {
@@ -130,13 +153,60 @@ func (p *PVQ) Encode(x []float64, k int) *PVQCodeword {
 		}
 	}
 
-	// Greedy pulse allocation algorithm
-	// Allocate pulses one at a time to minimize distortion
-	pulses := make([]int, n)
-	signs := make([]int, n)
-
-	// Determine signs from input
+	// Clear and initialize buffers
 	for i := 0; i < n; i++ {
+		pulses[i] = 0
+		if x[i] >= 0 {
+			signs[i] = 1
+		} else {
+			signs[i] = -1
+		}
+	}
+
+	// Allocate K pulses greedily
+	for pulse := 0; pulse < k; pulse++ {
+		bestIdx := 0
+		bestGain := -math.MaxFloat64
+
+		for i := 0; i < n; i++ {
+			currentNorm := 0.0
+			for j := 0; j < n; j++ {
+				val := float64(pulses[j])
+				currentNorm += val * val
+			}
+			newPulse := pulses[i] + 1
+			absX := math.Abs(x[i])
+			gain := absX * float64(newPulse) / math.Sqrt(currentNorm+float64(2*pulses[i]+1))
+			if gain > bestGain {
+				bestGain = gain
+				bestIdx = i
+			}
+		}
+		pulses[bestIdx]++
+	}
+
+	return p.encodeIndex(pulses, signs, n, k)
+}
+
+// encodeWithBuffers performs PVQ encoding with provided buffers.
+func (p *PVQ) encodeWithBuffers(x []float64, k int, pulses, signs []int) *PVQCodeword {
+	n := len(x)
+
+	// Normalize input to unit L2 norm
+	norm := 0.0
+	for i := 0; i < n; i++ {
+		norm += x[i] * x[i]
+	}
+	if norm > 0 {
+		norm = math.Sqrt(norm)
+		for i := 0; i < n; i++ {
+			x[i] /= norm
+		}
+	}
+
+	// Clear and initialize buffers
+	for i := 0; i < n; i++ {
+		pulses[i] = 0
 		if x[i] >= 0 {
 			signs[i] = 1
 		} else {
