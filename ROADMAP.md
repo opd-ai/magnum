@@ -208,9 +208,12 @@ The 24 kHz CELT path has notably higher latency (569 µs vs 62 µs for 48 kHz), 
 
 **Current state**: 72 functions flagged as potentially misplaced; 5 files with low cohesion; some duplicate blocks in decoder.go.
 
-- [ ] **6.1** Extract duplicate CELT decode logic in `decoder.go:374-389` and `decoder.go:401-416` into shared helper.
-- [ ] **6.2** Extract duplicate hybrid decode logic in `decoder.go:493-508` and `decoder.go:525-539` into shared helper.
-- [ ] **6.3** Evaluate moving error definitions from `errors.go` to their respective codec files (or document why centralized is preferred).
+- [x] **6.1** Extract duplicate CELT decode logic in `decoder.go:374-389` and `decoder.go:401-416` into shared helper.
+  - *Completed*: Created `validateTOCChannelAndRate` for shared TOC validation; `decodeCELTTwoFrames` for shared frame decode/concatenate logic; `decodeAllocCodec` for shared validate/decode/convert pattern.
+- [x] **6.2** Extract duplicate hybrid decode logic in `decoder.go:493-508` and `decoder.go:525-539` into shared helper.
+  - *Resolved*: These duplicates were addressed by the refactoring in 6.1. The `decodeAllocCodec` helper now handles both CELT and Hybrid decode paths. No decoder.go duplicates remain.
+- [x] **6.3** Evaluate moving error definitions from `errors.go` to their respective codec files (or document why centralized is preferred).
+  - *Evaluated*: Centralized `errors.go` is the preferred pattern for this project because: (1) Users do `errors.Is` branching which benefits from a single import; (2) Follows Go standard library patterns; (3) Provides consistent documentation; (4) Simplifies API discoverability. Keeping errors centralized.
 
 **Validation**: `go-stats-generator analyze .` shows reduced duplication ratio (<1.0%).
 

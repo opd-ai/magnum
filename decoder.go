@@ -395,6 +395,28 @@ func (d *Decoder) updatePLCState(samples []int16, count int) {
 	d.plcState.PacketReceived(frameData)
 }
 
+// validateTOCChannelAndRate validates that the TOC header's channel and sample rate
+// settings match the decoder's configuration. This is shared logic used by both
+// single-frame and multi-frame validation.
+func (d *Decoder) validateTOCChannelAndRate(toc tocHeader) error {
+	stereo := toc.isStereo()
+	packetChannels := 1
+	if stereo {
+		packetChannels = 2
+	}
+	if packetChannels != d.channels {
+		return fmt.Errorf("magnum: decode: %w", ErrChannelMismatch)
+	}
+
+	config := toc.configuration()
+	packetSampleRate := sampleRateForConfig(config)
+	if packetSampleRate != d.sampleRate {
+		return fmt.Errorf("magnum: decode: %w", ErrSampleRateMismatch)
+	}
+
+	return nil
+}
+
 // validateTOCHeader validates the TOC header and returns stereo flag and config.
 // This version only accepts single-frame packets (frame code 0).
 func (d *Decoder) validateTOCHeader(packet []byte) (toc tocHeader, err error) {
@@ -407,19 +429,8 @@ func (d *Decoder) validateTOCHeader(packet []byte) (toc tocHeader, err error) {
 		return 0, ErrUnsupportedFrameCode
 	}
 
-	stereo := toc.isStereo()
-	packetChannels := 1
-	if stereo {
-		packetChannels = 2
-	}
-	if packetChannels != d.channels {
-		return 0, fmt.Errorf("magnum: decode: %w", ErrChannelMismatch)
-	}
-
-	config := toc.configuration()
-	packetSampleRate := sampleRateForConfig(config)
-	if packetSampleRate != d.sampleRate {
-		return 0, fmt.Errorf("magnum: decode: %w", ErrSampleRateMismatch)
+	if err := d.validateTOCChannelAndRate(toc); err != nil {
+		return 0, err
 	}
 
 	return toc, nil
@@ -434,19 +445,8 @@ func (d *Decoder) validateTOCHeaderMultiFrame(packet []byte) (toc tocHeader, err
 
 	toc = tocHeader(packet[0])
 
-	stereo := toc.isStereo()
-	packetChannels := 1
-	if stereo {
-		packetChannels = 2
-	}
-	if packetChannels != d.channels {
-		return 0, fmt.Errorf("magnum: decode: %w", ErrChannelMismatch)
-	}
-
-	config := toc.configuration()
-	packetSampleRate := sampleRateForConfig(config)
-	if packetSampleRate != d.sampleRate {
-		return 0, fmt.Errorf("magnum: decode: %w", ErrSampleRateMismatch)
+	if err := d.validateTOCChannelAndRate(toc); err != nil {
+		return 0, err
 	}
 
 	return toc, nil
@@ -590,15 +590,9 @@ func (d *Decoder) interleaveStereoSamples(left, right []float64, out []int16) in
 	return numSamples
 }
 
-// decodeCELTTwoEqualFrames decodes a frame code 1 packet (two equal-size frames).
-func (d *Decoder) decodeCELTTwoEqualFrames(payload []byte, out []int16) (int, error) {
-	if len(payload)%2 != 0 {
-		return 0, ErrInvalidFrameData
-	}
-	frameLen := len(payload) / 2
-	frame1 := payload[:frameLen]
-	frame2 := payload[frameLen:]
-
+// decodeCELTTwoFrames decodes two CELT frames, concatenates their samples, and converts to int16.
+// This is shared logic for frame codes 1 and 2 which both decode two frames.
+func (d *Decoder) decodeCELTTwoFrames(frame1, frame2 []byte, out []int16) (int, error) {
 	samples1, err := d.celtDecoder.DecodeFrame(frame1)
 	if err != nil {
 		return 0, fmt.Errorf("magnum: decode: CELT frame 1: %w", err)
@@ -609,12 +603,20 @@ func (d *Decoder) decodeCELTTwoEqualFrames(payload []byte, out []int16) (int, er
 		return 0, fmt.Errorf("magnum: decode: CELT frame 2: %w", err)
 	}
 
-	// Concatenate samples
 	allSamples := make([]float64, 0, len(samples1)+len(samples2))
 	allSamples = append(allSamples, samples1...)
 	allSamples = append(allSamples, samples2...)
 
 	return d.convertFloatSamplesToInt16(allSamples, out), nil
+}
+
+// decodeCELTTwoEqualFrames decodes a frame code 1 packet (two equal-size frames).
+func (d *Decoder) decodeCELTTwoEqualFrames(payload []byte, out []int16) (int, error) {
+	if len(payload)%2 != 0 {
+		return 0, ErrInvalidFrameData
+	}
+	frameLen := len(payload) / 2
+	return d.decodeCELTTwoFrames(payload[:frameLen], payload[frameLen:], out)
 }
 
 // decodeCELTTwoDifferentFrames decodes a frame code 2 packet (two different-size frames).
@@ -628,24 +630,7 @@ func (d *Decoder) decodeCELTTwoDifferentFrames(payload []byte, out []int16) (int
 		return 0, ErrInvalidFrameData
 	}
 
-	frame1 := payload[consumed : consumed+frame1Len]
-	frame2 := payload[consumed+frame1Len:]
-
-	samples1, err := d.celtDecoder.DecodeFrame(frame1)
-	if err != nil {
-		return 0, fmt.Errorf("magnum: decode: CELT frame 1: %w", err)
-	}
-
-	samples2, err := d.celtDecoder.DecodeFrame(frame2)
-	if err != nil {
-		return 0, fmt.Errorf("magnum: decode: CELT frame 2: %w", err)
-	}
-
-	allSamples := make([]float64, 0, len(samples1)+len(samples2))
-	allSamples = append(allSamples, samples1...)
-	allSamples = append(allSamples, samples2...)
-
-	return d.convertFloatSamplesToInt16(allSamples, out), nil
+	return d.decodeCELTTwoFrames(payload[consumed:consumed+frame1Len], payload[consumed+frame1Len:], out)
 }
 
 // decodeCELTArbitraryFrames decodes a frame code 3 packet (arbitrary frame count).
@@ -841,42 +826,30 @@ func (d *Decoder) DecodeAlloc(packet []byte) ([]int16, error) {
 	return d.decodeAllocFlate(packet)
 }
 
-// decodeAllocCELT decodes a CELT-encoded packet and allocates the result.
-func (d *Decoder) decodeAllocCELT(packet []byte) ([]int16, error) {
-	// Validate TOC header
+// decodeAllocCodec is a helper that validates the TOC header, decodes using the provided
+// decode function, and converts the float samples to int16. Used by decodeAllocCELT and decodeAllocHybrid.
+func (d *Decoder) decodeAllocCodec(packet []byte, decodeFn func([]byte) ([]float64, error), codecName string) ([]int16, error) {
 	_, err := validateTOCForDecode(packet, d.channels, d.sampleRate)
 	if err != nil {
 		return nil, err
 	}
 
-	// Decode CELT payload
-	celtPayload := packet[1:]
-	floatSamples, err := d.celtDecoder.DecodeFrame(celtPayload)
+	floatSamples, err := decodeFn(packet[1:])
 	if err != nil {
-		return nil, fmt.Errorf("magnum: decode: CELT: %w", err)
+		return nil, fmt.Errorf("magnum: decode: %s: %w", codecName, err)
 	}
 
-	// Convert float64 samples to int16
 	return floatToInt16Samples(floatSamples, d.channels), nil
+}
+
+// decodeAllocCELT decodes a CELT-encoded packet and allocates the result.
+func (d *Decoder) decodeAllocCELT(packet []byte) ([]int16, error) {
+	return d.decodeAllocCodec(packet, d.celtDecoder.DecodeFrame, "CELT")
 }
 
 // decodeAllocHybrid decodes a hybrid SILK+CELT encoded packet and allocates the result.
 func (d *Decoder) decodeAllocHybrid(packet []byte) ([]int16, error) {
-	// Validate TOC header
-	_, err := validateTOCForDecode(packet, d.channels, d.sampleRate)
-	if err != nil {
-		return nil, err
-	}
-
-	// Decode hybrid payload
-	hybridPayload := packet[1:]
-	floatSamples, err := d.hybridDecoder.DecodeFrame(hybridPayload)
-	if err != nil {
-		return nil, fmt.Errorf("magnum: decode: hybrid: %w", err)
-	}
-
-	// Convert float64 samples to int16
-	return floatToInt16Samples(floatSamples, d.channels), nil
+	return d.decodeAllocCodec(packet, d.hybridDecoder.DecodeFrame, "hybrid")
 }
 
 // decodeAllocFlate decodes a flate-compressed packet and allocates the result.
