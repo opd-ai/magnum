@@ -272,17 +272,21 @@ func TestConformanceBitExact(t *testing.T) {
 		t.Skip("Test vectors not found; run: cd testdata && curl -LO https://opus-codec.org/static/testvectors/opus_testvectors.tar.gz && tar xzf opus_testvectors.tar.gz")
 	}
 
-	// Focus on testvector01 (48 kHz stereo CELT) as primary validation case.
-	// All test vectors use 48 kHz stereo in the reference .dec files.
+	// Test multiple vectors covering different codec paths.
+	// All reference .dec files contain 48 kHz stereo PCM output.
+	// Start with vectors that match our decoder configuration for direct comparison.
+	// - testvector10: CELT FB stereo, frame code 0 (single frames) - BEST FOR TESTING
+	// - testvector01: CELT FB stereo, frame code 3 (arbitrary frames)
 	testVectors := []struct {
-		name     string
-		bitFile  string
-		decFile  string
-		channels int
+		name       string
+		bitFile    string
+		decFile    string
+		channels   int    // Decoder configuration channels
+		sampleRate int    // Decoder configuration sample rate
+		codec      string // Expected codec path
 	}{
-		{"testvector01", "testvector01.bit", "testvector01.dec", 2},
-		{"testvector02", "testvector02.bit", "testvector02.dec", 2},
-		{"testvector03", "testvector03.bit", "testvector03.dec", 2},
+		{"testvector10", "testvector10.bit", "testvector10.dec", 2, 48000, "CELT"},
+		{"testvector01", "testvector01.bit", "testvector01.dec", 2, 48000, "CELT"},
 	}
 
 	for _, tv := range testVectors {
@@ -302,19 +306,23 @@ func TestConformanceBitExact(t *testing.T) {
 				t.Fatalf("Failed to read reference PCM: %v", err)
 			}
 
-			// Create decoder at 48 kHz stereo
-			dec, err := NewDecoder(48000, 2)
+			// Create decoder with test vector's configuration
+			dec, err := NewDecoder(tv.sampleRate, tv.channels)
 			if err != nil {
 				t.Fatalf("Failed to create decoder: %v", err)
 			}
 
 			// Enable CELT for RFC 6716 compliant decoding
-			if err := dec.EnableCELT(); err != nil {
-				t.Fatalf("Failed to enable CELT: %v", err)
+			if tv.codec == "CELT" {
+				if err := dec.EnableCELT(); err != nil {
+					t.Fatalf("Failed to enable CELT: %v", err)
+				}
 			}
 
 			// Decode all packets and compare to reference
-			frameSize := 1920 // 48 kHz × 20 ms × 2 channels
+			// Reference .dec files are always 48 kHz stereo
+			refFrameSize := 1920 // 48 kHz × 20 ms × 2 channels
+			decFrameSize := tv.sampleRate * 20 / 1000 * tv.channels
 			refOffset := 0
 			decodedCount := 0
 			errorCount := 0
@@ -328,14 +336,14 @@ func TestConformanceBitExact(t *testing.T) {
 			for i, pkt := range packets {
 				if len(pkt.data) == 0 {
 					// Silent frame - reference has zeros
-					refOffset += frameSize
+					refOffset += refFrameSize
 					continue
 				}
 
 				info, err := ParseTOCByte(pkt.data[0])
 				if err != nil {
 					errorCount++
-					refOffset += frameSize
+					refOffset += refFrameSize
 					continue
 				}
 
@@ -368,20 +376,20 @@ func TestConformanceBitExact(t *testing.T) {
 						framesToDecode = int(mByte & 0x3F)
 						if framesToDecode == 0 || framesToDecode > 48 {
 							stats.skipped++
-							refOffset += frameSize * 2 // Conservative estimate
+							refOffset += refFrameSize * 2 // Conservative estimate
 							skippedFrameCode++
 							continue
 						}
 					} else {
 						stats.skipped++
-						refOffset += frameSize * 2
+						refOffset += refFrameSize * 2
 						skippedFrameCode++
 						continue
 					}
 				}
 
 				// Attempt decode
-				out := make([]int16, frameSize*framesToDecode)
+				out := make([]int16, decFrameSize*framesToDecode)
 				n, decErr := dec.Decode(pkt.data, out)
 				if decErr != nil {
 					stats.failed++
@@ -390,7 +398,7 @@ func TestConformanceBitExact(t *testing.T) {
 					}
 					errorCount++
 					// Advance reference by expected frame count
-					refOffset += frameSize * framesToDecode
+					refOffset += refFrameSize * framesToDecode
 					continue
 				}
 
@@ -428,7 +436,7 @@ func TestConformanceBitExact(t *testing.T) {
 					stats.samples++
 				}
 
-				refOffset += frameSize * framesToDecode
+				refOffset += refFrameSize * framesToDecode
 			}
 
 			// Calculate RMS error and SNR

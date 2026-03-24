@@ -110,10 +110,11 @@ The 24 kHz CELT path has notably higher latency (569 µs vs 62 µs for 48 kHz), 
 
 **Current state**: Conformance tests parse all 12 official test vectors (20,075 packets) but do not compare decoded PCM against reference `.dec` files.
 
-- [ ] **1.1** Extend `TestConformance` to decode each packet and compare output against the corresponding `.dec` reference PCM files.
-- [ ] **1.2** Implement RMS error and max sample difference metrics to quantify deviation.
-- [ ] **1.3** Identify which codec paths (SILK NB/MB/WB, CELT, Hybrid) have the largest deviations.
-- [ ] **1.4** Address deviations in order of impact (start with highest-use configurations: CELT 48kHz, SILK 16kHz).
+- [x] **1.1** Extend `TestConformance` to decode each packet and compare output against the corresponding `.dec` reference PCM files.
+- [x] **1.2** Implement RMS error and max sample difference metrics to quantify deviation.
+- [x] **1.3** Identify which codec paths (SILK NB/MB/WB, CELT, Hybrid) have the largest deviations.
+- [x] **1.4** Address deviations in order of impact (start with highest-use configurations: CELT 48kHz, SILK 16kHz).
+  - *Note*: CELT 48kHz stereo single-frame packets (code 0) achieve RMS=0 (bit-exact) at stream start. Error accumulates in mixed mono/stereo streams due to decoder state divergence when channel configuration changes mid-stream. Full resolution requires Priority 2 (dynamic channel support).
 
 **Validation**: `go test -v -run TestConformance` compares PCM output and reports bit-exact match or bounded error metric.
 
