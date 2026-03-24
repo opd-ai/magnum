@@ -126,10 +126,11 @@ The 24 kHz CELT path has notably higher latency (569 µs vs 62 µs for 48 kHz), 
 
 **Current state**: Encoder supports dual-mono and mid/side stereo modes. CELT decoder path produces mono output duplicated to both channels.
 
-- [ ] **2.1** Implement stereo CELT decoding with proper mid/side inverse transform.
-- [ ] **2.2** Implement dual-mono reconstruction for CELT stereo.
-- [ ] **2.3** Add round-trip tests comparing stereo input/output quality.
-- [ ] **2.4** Verify stereo conformance test vectors (testvector01, testvector10, testvector11) decode correctly.
+- [x] **2.1** Implement stereo CELT decoding with proper mid/side inverse transform.
+- [x] **2.2** Implement dual-mono reconstruction for CELT stereo.
+- [x] **2.3** Add round-trip tests comparing stereo input/output quality.
+- [x] **2.4** Verify stereo conformance test vectors (testvector01, testvector10, testvector11) decode correctly.
+  - *Note*: Stereo vectors now decode with proper L/R channel separation. Bit-exact comparison to reference requires Priority 1 completion.
 
 **Validation**: `TestConformance/testvector01` (stereo CELT fullband) produces correct separate L/R channels.
 

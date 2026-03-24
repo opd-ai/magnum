@@ -105,6 +105,9 @@ type Decoder struct {
 	flateR io.ReadCloser
 	// celtDecoder for 24 kHz and 48 kHz sample rates when useCELT is true.
 	celtDecoder *CELTFrameDecoder
+	// celtDecoderR is a second CELT decoder for the right channel in stereo.
+	// nil for mono or when useCELT is false.
+	celtDecoderR *CELTFrameDecoder
 	// hybridDecoder for 24 kHz hybrid mode (configurations 12-19).
 	hybridDecoder *HybridDecoder
 	// useHybrid controls whether to use the hybrid codec for decoding.
@@ -113,6 +116,9 @@ type Decoder struct {
 	plcState *PLCState
 	// usePLC controls whether PLC is enabled for this decoder.
 	usePLC bool
+	// useMidSide enables mid/side stereo decoding. When true, the decoder
+	// applies the inverse M/S transform after decoding stereo channels.
+	useMidSide bool
 }
 
 // NewDecoder creates a new Decoder for the given sample rate and channel count.
@@ -156,19 +162,29 @@ func (d *Decoder) EnableCELT() error {
 		return fmt.Errorf("magnum: CELT requires 24000 or 48000 Hz sample rate, got %d", d.sampleRate)
 	}
 
+	frameSize := d.sampleRate * 20 / 1000 // Samples per channel for 20 ms
+	celtConfig := CELTFrameConfig{
+		SampleRate: d.sampleRate,
+		Channels:   1, // CELT frame decoder is always mono; stereo handled at Decoder level
+		FrameSize:  frameSize,
+		Bitrate:    64000, // Default bitrate
+	}
+
 	if d.celtDecoder == nil {
-		frameSize := d.sampleRate * 20 / 1000 // Samples per channel for 20 ms
-		celtConfig := CELTFrameConfig{
-			SampleRate: d.sampleRate,
-			Channels:   d.channels,
-			FrameSize:  frameSize,
-			Bitrate:    64000, // Default bitrate
-		}
 		celtDec, err := NewCELTFrameDecoder(celtConfig)
 		if err != nil {
 			return fmt.Errorf("magnum: enable CELT: %w", err)
 		}
 		d.celtDecoder = celtDec
+	}
+
+	// For stereo, create a second decoder for the right channel
+	if d.channels == 2 && d.celtDecoderR == nil {
+		celtDecR, err := NewCELTFrameDecoder(celtConfig)
+		if err != nil {
+			return fmt.Errorf("magnum: enable CELT (right channel): %w", err)
+		}
+		d.celtDecoderR = celtDecR
 	}
 
 	d.useCELT = true
@@ -236,6 +252,26 @@ func (d *Decoder) EnablePLC() {
 // IsPLCEnabled returns true if PLC is enabled for this decoder.
 func (d *Decoder) IsPLCEnabled() bool {
 	return d.usePLC && d.plcState != nil
+}
+
+// EnableMidSideStereo enables mid/side stereo decoding for stereo decoders.
+// When enabled, the decoder applies the inverse M/S transform after decoding
+// stereo channels: L = M + S, R = M - S.
+// This should be used when decoding packets from an encoder with mid/side
+// stereo enabled. Has no effect on mono decoders.
+func (d *Decoder) EnableMidSideStereo() {
+	d.useMidSide = true
+}
+
+// DisableMidSideStereo disables mid/side stereo decoding, reverting to
+// dual-mono decoding (default) for stereo content.
+func (d *Decoder) DisableMidSideStereo() {
+	d.useMidSide = false
+}
+
+// IsMidSideStereoEnabled returns true if mid/side stereo decoding is enabled.
+func (d *Decoder) IsMidSideStereoEnabled() bool {
+	return d.useMidSide
 }
 
 // DecodePLC synthesizes concealment audio for a lost packet.
@@ -461,6 +497,10 @@ func (d *Decoder) decodeCELT(packet []byte, out []int16) (int, error) {
 	fc := toc.frameCode()
 	switch fc {
 	case frameCodeOneFrame:
+		// Check if this is a stereo packet
+		if d.channels == 2 && toc.isStereo() {
+			return d.decodeCELTStereoSingleFrame(packet[1:], out)
+		}
 		floatSamples, err := d.celtDecoder.DecodeFrame(packet[1:])
 		if err != nil {
 			return 0, fmt.Errorf("magnum: decode: CELT: %w", err)
@@ -479,6 +519,75 @@ func (d *Decoder) decodeCELT(packet []byte, out []int16) (int, error) {
 	default:
 		return 0, ErrUnsupportedFrameCode
 	}
+}
+
+// decodeCELTStereoSingleFrame decodes a stereo CELT single-frame packet.
+// Stereo CELT packets contain two concatenated mono frames (left/right or mid/side).
+// The payload is split in half, each half decoded separately, then interleaved.
+func (d *Decoder) decodeCELTStereoSingleFrame(payload []byte, out []int16) (int, error) {
+	if len(payload)%2 != 0 {
+		return 0, ErrInvalidFrameData
+	}
+
+	frameLen := len(payload) / 2
+	ch1Data := payload[:frameLen]
+	ch2Data := payload[frameLen:]
+
+	// Decode first channel (left or mid)
+	ch1Samples, err := d.celtDecoder.DecodeFrame(ch1Data)
+	if err != nil {
+		return 0, fmt.Errorf("magnum: decode: CELT ch1: %w", err)
+	}
+
+	// Decode second channel (right or side)
+	ch2Samples, err := d.celtDecoderR.DecodeFrame(ch2Data)
+	if err != nil {
+		return 0, fmt.Errorf("magnum: decode: CELT ch2: %w", err)
+	}
+
+	// Apply inverse mid/side transform if enabled
+	if d.useMidSide {
+		ch1Samples, ch2Samples = convertFromMidSide(ch1Samples, ch2Samples)
+	}
+
+	// Interleave stereo samples
+	return d.interleaveStereoSamples(ch1Samples, ch2Samples, out), nil
+}
+
+// convertFromMidSide converts M/S samples back to L/R stereo.
+// Inverse of the encoder's convertToMidSide: L = M + S, R = M - S.
+func convertFromMidSide(mid, side []float64) (left, right []float64) {
+	n := len(mid)
+	if len(side) < n {
+		n = len(side)
+	}
+	left = make([]float64, n)
+	right = make([]float64, n)
+	for i := 0; i < n; i++ {
+		left[i] = mid[i] + side[i]
+		right[i] = mid[i] - side[i]
+	}
+	return left, right
+}
+
+// interleaveStereoSamples interleaves left and right channel samples into out.
+// Returns the total number of samples written (len(left) + len(right)).
+func (d *Decoder) interleaveStereoSamples(left, right []float64, out []int16) int {
+	n := len(left)
+	if len(right) < n {
+		n = len(right)
+	}
+	numSamples := n * 2
+
+	if out == nil || len(out) < numSamples {
+		return numSamples
+	}
+
+	for i := 0; i < n; i++ {
+		out[i*2] = clampToInt16(left[i] * 32767.0)
+		out[i*2+1] = clampToInt16(right[i] * 32767.0)
+	}
+	return numSamples
 }
 
 // decodeCELTTwoEqualFrames decodes a frame code 1 packet (two equal-size frames).

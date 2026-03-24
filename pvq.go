@@ -147,9 +147,9 @@ func (p *PVQ) EncodeIndex(x []float64, k int, pulses, signs []int) uint64 {
 		norm += x[i] * x[i]
 	}
 	if norm > 0 {
-		norm = math.Sqrt(norm)
+		norm = 1.0 / math.Sqrt(norm)
 		for i := 0; i < n; i++ {
-			x[i] /= norm
+			x[i] *= norm
 		}
 	}
 
@@ -163,25 +163,32 @@ func (p *PVQ) EncodeIndex(x []float64, k int, pulses, signs []int) uint64 {
 		}
 	}
 
-	// Allocate K pulses greedily
+	// Allocate K pulses greedily with O(NK) complexity
+	// Track currentNorm incrementally instead of recomputing
+	currentNormSq := 0.0
+
 	for pulse := 0; pulse < k; pulse++ {
 		bestIdx := 0
 		bestGain := -math.MaxFloat64
 
 		for i := 0; i < n; i++ {
-			currentNorm := 0.0
-			for j := 0; j < n; j++ {
-				val := float64(pulses[j])
-				currentNorm += val * val
-			}
 			newPulse := pulses[i] + 1
-			absX := math.Abs(x[i])
-			gain := absX * float64(newPulse) / math.Sqrt(currentNorm+float64(2*pulses[i]+1))
+			// Gain formula: |x[i]| * newPulse / sqrt(currentNormSq + 2*pulses[i] + 1)
+			// Optimization: avoid Abs by using pre-computed sign
+			absX := x[i]
+			if signs[i] < 0 {
+				absX = -absX
+			}
+			// delta = (2*pulses[i] + 1) is the change in norm squared
+			gain := absX * float64(newPulse) / math.Sqrt(currentNormSq+float64(2*pulses[i]+1))
 			if gain > bestGain {
 				bestGain = gain
 				bestIdx = i
 			}
 		}
+		// Update currentNormSq for next iteration
+		// ||p||^2 increases by (2*p[i] + 1) when p[i] increments by 1
+		currentNormSq += float64(2*pulses[bestIdx] + 1)
 		pulses[bestIdx]++
 	}
 
@@ -198,9 +205,9 @@ func (p *PVQ) encodeWithBuffers(x []float64, k int, pulses, signs []int) *PVQCod
 		norm += x[i] * x[i]
 	}
 	if norm > 0 {
-		norm = math.Sqrt(norm)
+		norm = 1.0 / math.Sqrt(norm)
 		for i := 0; i < n; i++ {
-			x[i] /= norm
+			x[i] *= norm
 		}
 	}
 
@@ -214,26 +221,25 @@ func (p *PVQ) encodeWithBuffers(x []float64, k int, pulses, signs []int) *PVQCod
 		}
 	}
 
-	// Allocate K pulses greedily
+	// Allocate K pulses greedily with O(NK) complexity
+	// Track currentNormSq incrementally instead of recomputing
+	currentNormSq := 0.0
+
 	for pulse := 0; pulse < k; pulse++ {
 		bestIdx := 0
 		bestGain := -math.MaxFloat64
 
 		// Find position that maximizes correlation with target
 		for i := 0; i < n; i++ {
-			// Compute gain from adding one pulse at position i
-			currentNorm := 0.0
-			for j := 0; j < n; j++ {
-				val := float64(pulses[j])
-				currentNorm += val * val
-			}
-
 			// Proposed pulse count at position i
 			newPulse := pulses[i] + 1
 
-			// Compute correlation gain
-			absX := math.Abs(x[i])
-			gain := absX * float64(newPulse) / math.Sqrt(currentNorm+float64(2*pulses[i]+1))
+			// Compute correlation gain using pre-computed sign
+			absX := x[i]
+			if signs[i] < 0 {
+				absX = -absX
+			}
+			gain := absX * float64(newPulse) / math.Sqrt(currentNormSq+float64(2*pulses[i]+1))
 
 			if gain > bestGain {
 				bestGain = gain
@@ -241,6 +247,8 @@ func (p *PVQ) encodeWithBuffers(x []float64, k int, pulses, signs []int) *PVQCod
 			}
 		}
 
+		// Update currentNormSq for next iteration
+		currentNormSq += float64(2*pulses[bestIdx] + 1)
 		pulses[bestIdx]++
 	}
 

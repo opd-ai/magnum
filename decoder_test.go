@@ -712,3 +712,183 @@ func TestConvertFloatSamplesToInt16Stereo(t *testing.T) {
 		t.Errorf("stereo sample 1: L=%d, R=%d (should be equal)", out[2], out[3])
 	}
 }
+
+// TestDecoderStereoCELT tests stereo CELT decoding with proper channel separation.
+func TestDecoderStereoCELT(t *testing.T) {
+	t.Parallel()
+
+	// Create stereo encoder and decoder
+	enc, err := NewEncoder(48000, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.EnableCELT(); err != nil {
+		t.Fatal(err)
+	}
+
+	dec, err := NewDecoder(48000, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dec.EnableCELT(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Generate distinct stereo signal: left = +sine, right = -sine
+	frameSize := 48000 * 20 / 1000 // samples per channel
+	samples := make([]int16, frameSize*2)
+	for i := 0; i < frameSize; i++ {
+		val := int16(5000 * float64(i) / float64(frameSize))
+		samples[i*2] = val    // Left: positive ramp
+		samples[i*2+1] = -val // Right: negative ramp
+	}
+
+	// Encode
+	packet, err := enc.Encode(samples)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if packet == nil {
+		t.Fatal("Expected packet, got nil")
+	}
+
+	// Decode
+	out := make([]int16, frameSize*2)
+	n, err := dec.Decode(packet, out)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+
+	// CELT decoder returns fewer samples due to MDCT overlap-add
+	// but should return interleaved stereo (even count)
+	if n < 2 || n%2 != 0 {
+		t.Errorf("Decode returned %d samples, expected even count >= 2", n)
+	}
+
+	// Check that channels are distinct (not duplicated)
+	// Due to lossy compression, values won't match exactly, but
+	// left should be positive-trending and right should be negative-trending
+	leftSum := int64(0)
+	rightSum := int64(0)
+	samplePairs := n / 2
+	for i := 0; i < samplePairs; i++ {
+		leftSum += int64(out[i*2])
+		rightSum += int64(out[i*2+1])
+	}
+
+	// Left channel should have positive average, right should have negative
+	if leftSum < 0 {
+		t.Errorf("Left channel sum %d should be positive", leftSum)
+	}
+	if rightSum > 0 {
+		t.Errorf("Right channel sum %d should be negative", rightSum)
+	}
+}
+
+// TestDecoderMidSideTransform tests the mid/side inverse transform.
+func TestDecoderMidSideTransform(t *testing.T) {
+	t.Parallel()
+
+	// Test convertFromMidSide directly
+	mid := []float64{0.5, 0.6, 0.7}
+	side := []float64{0.1, 0.2, 0.0}
+
+	// Expected: L = M + S, R = M - S
+	// L = [0.6, 0.8, 0.7], R = [0.4, 0.4, 0.7]
+	left, right := convertFromMidSide(mid, side)
+
+	if len(left) != 3 || len(right) != 3 {
+		t.Fatalf("Expected 3 samples each, got left=%d, right=%d", len(left), len(right))
+	}
+
+	// Check values with tolerance for float precision
+	tolerance := 1e-10
+	expectedL := []float64{0.6, 0.8, 0.7}
+	expectedR := []float64{0.4, 0.4, 0.7}
+
+	for i := 0; i < 3; i++ {
+		if absDiff(left[i], expectedL[i]) > tolerance {
+			t.Errorf("left[%d] = %f, want %f", i, left[i], expectedL[i])
+		}
+		if absDiff(right[i], expectedR[i]) > tolerance {
+			t.Errorf("right[%d] = %f, want %f", i, right[i], expectedR[i])
+		}
+	}
+}
+
+// TestDecoderMidSideStereoRoundTrip tests encoding with mid/side and decoding back.
+func TestDecoderMidSideStereoRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	// Create encoder with mid/side enabled
+	enc, err := NewEncoder(48000, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.EnableCELT(); err != nil {
+		t.Fatal(err)
+	}
+	enc.EnableMidSideStereo()
+
+	// Create decoder with mid/side enabled
+	dec, err := NewDecoder(48000, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dec.EnableCELT(); err != nil {
+		t.Fatal(err)
+	}
+	dec.EnableMidSideStereo()
+
+	// Generate correlated stereo signal (center-panned)
+	frameSize := 48000 * 20 / 1000
+	samples := make([]int16, frameSize*2)
+	for i := 0; i < frameSize; i++ {
+		val := int16(10000 * float64(i) / float64(frameSize))
+		samples[i*2] = val   // Left
+		samples[i*2+1] = val // Right (same as left = center)
+	}
+
+	// Encode
+	packet, err := enc.Encode(samples)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+
+	// Decode
+	out := make([]int16, frameSize*2)
+	n, err := dec.Decode(packet, out)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+
+	// CELT decoder returns fewer samples due to MDCT overlap-add
+	// but should return interleaved stereo (even count)
+	if n < 2 || n%2 != 0 {
+		t.Errorf("Decode returned %d samples, expected even count >= 2", n)
+	}
+
+	// For center-panned content, L and R should be similar
+	diffSum := int64(0)
+	samplePairs := n / 2
+	for i := 0; i < samplePairs; i++ {
+		diff := int64(out[i*2]) - int64(out[i*2+1])
+		if diff < 0 {
+			diff = -diff
+		}
+		diffSum += diff
+	}
+
+	avgDiff := float64(diffSum) / float64(samplePairs)
+	// Allow some deviation due to compression, but channels should be similar
+	if avgDiff > 1000 {
+		t.Errorf("Average L/R difference %f too large for center-panned content", avgDiff)
+	}
+}
+
+func absDiff(a, b float64) float64 {
+	if a > b {
+		return a - b
+	}
+	return b - a
+}
