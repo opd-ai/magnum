@@ -2067,3 +2067,89 @@ func TestDecodeFrameCode3Invalid(t *testing.T) {
 		})
 	}
 }
+
+// TestEncoderMidSideStereo tests mid/side stereo encoding.
+func TestEncoderMidSideStereo(t *testing.T) {
+	t.Parallel()
+
+	enc, err := NewEncoder(48000, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Enable mid/side stereo
+	enc.EnableMidSideStereo()
+	if !enc.IsMidSideStereoEnabled() {
+		t.Error("IsMidSideStereoEnabled should return true after enabling")
+	}
+
+	// Generate correlated stereo signal (center-panned sine wave)
+	frameSize := 48000 * 20 / 1000 * 2 // stereo
+	samples := make([]int16, frameSize)
+	for i := 0; i < len(samples)/2; i++ {
+		val := int16(10000 * float64(i) / float64(frameSize/2))
+		samples[i*2] = val   // Left
+		samples[i*2+1] = val // Right = Left (perfectly correlated)
+	}
+
+	packet, err := enc.Encode(samples)
+	if err != nil {
+		t.Fatalf("Encode with mid/side: %v", err)
+	}
+	if packet == nil {
+		t.Fatal("Expected packet, got nil")
+	}
+
+	// Disable and verify
+	enc.DisableMidSideStereo()
+	if enc.IsMidSideStereoEnabled() {
+		t.Error("IsMidSideStereoEnabled should return false after disabling")
+	}
+}
+
+// TestConvertToMidSide tests the mid/side conversion helper.
+func TestConvertToMidSide(t *testing.T) {
+	t.Parallel()
+
+	// Test case: L=1000, R=1000 (perfectly correlated)
+	// Expected: M=1000, S=0
+	interleaved := []int16{1000, 1000}
+	mid, side := convertToMidSide(interleaved)
+
+	if len(mid) != 1 || len(side) != 1 {
+		t.Fatalf("Expected 1 sample each, got mid=%d, side=%d", len(mid), len(side))
+	}
+
+	// M = (L+R)/2 = (1000+1000)/2 = 1000 (normalized by /32768)
+	expectedMid := (1000.0 + 1000.0) / 2.0 / 32768.0
+	expectedSide := (1000.0 - 1000.0) / 2.0 / 32768.0
+
+	if abs(mid[0]-expectedMid) > 1e-6 {
+		t.Errorf("mid[0] = %f, want %f", mid[0], expectedMid)
+	}
+	if abs(side[0]-expectedSide) > 1e-6 {
+		t.Errorf("side[0] = %f, want %f", side[0], expectedSide)
+	}
+
+	// Test case: L=1000, R=-1000 (perfectly decorrelated)
+	// Expected: M=0, S=1000
+	interleaved2 := []int16{1000, -1000}
+	mid2, side2 := convertToMidSide(interleaved2)
+
+	expectedMid2 := (1000.0 + (-1000.0)) / 2.0 / 32768.0
+	expectedSide2 := (1000.0 - (-1000.0)) / 2.0 / 32768.0
+
+	if abs(mid2[0]-expectedMid2) > 1e-6 {
+		t.Errorf("mid2[0] = %f, want %f", mid2[0], expectedMid2)
+	}
+	if abs(side2[0]-expectedSide2) > 1e-6 {
+		t.Errorf("side2[0] = %f, want %f", side2[0], expectedSide2)
+	}
+}
+
+func abs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}

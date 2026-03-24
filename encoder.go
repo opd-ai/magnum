@@ -590,33 +590,39 @@ func (e *Encoder) encodeFrameSILK(frame []int16, toc tocHeader) ([]byte, error) 
 		return result, nil
 	}
 
-	// Stereo: dual mono encoding - encode each channel independently
-	leftSamples := make([]float64, samplesPerChannel)
-	rightSamples := make([]float64, samplesPerChannel)
+	// Stereo: either mid/side or dual mono encoding
+	var ch1Samples, ch2Samples []float64
 
-	for i := 0; i < samplesPerChannel; i++ {
-		leftSamples[i] = float64(frame[i*2]) / 32768.0
-		rightSamples[i] = float64(frame[i*2+1]) / 32768.0
+	if e.useMidSide {
+		// Mid/side stereo: better compression for correlated channels
+		ch1Samples, ch2Samples = convertToMidSide(frame)
+	} else {
+		// Dual mono: encode each channel independently
+		ch1Samples = make([]float64, samplesPerChannel)
+		ch2Samples = make([]float64, samplesPerChannel)
+		for i := 0; i < samplesPerChannel; i++ {
+			ch1Samples[i] = float64(frame[i*2]) / 32768.0
+			ch2Samples[i] = float64(frame[i*2+1]) / 32768.0
+		}
 	}
 
-	// Encode left channel
-	leftFrame, err := e.silkEncoder.EncodeFrame(leftSamples)
+	// Encode first channel (left or mid)
+	ch1Frame, err := e.silkEncoder.EncodeFrame(ch1Samples)
 	if err != nil {
-		return nil, fmt.Errorf("magnum: encode frame: SILK left: %w", err)
+		return nil, fmt.Errorf("magnum: encode frame: SILK ch1: %w", err)
 	}
 
-	// Encode right channel
-	rightFrame, err := e.silkEncoderR.EncodeFrame(rightSamples)
+	// Encode second channel (right or side)
+	ch2Frame, err := e.silkEncoderR.EncodeFrame(ch2Samples)
 	if err != nil {
-		return nil, fmt.Errorf("magnum: encode frame: SILK right: %w", err)
+		return nil, fmt.Errorf("magnum: encode frame: SILK ch2: %w", err)
 	}
 
-	// Build packet: TOC header + left SILK payload + right SILK payload
-	// In RFC 6716 dual mono, the two channel frames are simply concatenated
-	result := make([]byte, 1+len(leftFrame.Data)+len(rightFrame.Data))
+	// Build packet: TOC header + ch1 SILK payload + ch2 SILK payload
+	result := make([]byte, 1+len(ch1Frame.Data)+len(ch2Frame.Data))
 	result[0] = byte(toc)
-	copy(result[1:], leftFrame.Data)
-	copy(result[1+len(leftFrame.Data):], rightFrame.Data)
+	copy(result[1:], ch1Frame.Data)
+	copy(result[1+len(ch1Frame.Data):], ch2Frame.Data)
 
 	return result, nil
 }
@@ -650,13 +656,20 @@ func (e *Encoder) encodeFrameCELT(frame []int16, toc tocHeader) ([]byte, error) 
 		return result, nil
 	}
 
-	// Stereo: dual mono encoding - encode each channel independently
-	leftSamples := make([]float64, samplesPerChannel)
-	rightSamples := make([]float64, samplesPerChannel)
+	// Stereo: either mid/side or dual mono encoding
+	var ch1Samples, ch2Samples []float64
 
-	for i := 0; i < samplesPerChannel; i++ {
-		leftSamples[i] = float64(frame[i*2]) / 32768.0
-		rightSamples[i] = float64(frame[i*2+1]) / 32768.0
+	if e.useMidSide {
+		// Mid/side stereo: better compression for correlated channels
+		ch1Samples, ch2Samples = convertToMidSide(frame)
+	} else {
+		// Dual mono: encode each channel independently
+		ch1Samples = make([]float64, samplesPerChannel)
+		ch2Samples = make([]float64, samplesPerChannel)
+		for i := 0; i < samplesPerChannel; i++ {
+			ch1Samples[i] = float64(frame[i*2]) / 32768.0
+			ch2Samples[i] = float64(frame[i*2+1]) / 32768.0
+		}
 	}
 
 	// Update bitrate for both encoders (split evenly)
@@ -664,24 +677,23 @@ func (e *Encoder) encodeFrameCELT(frame []int16, toc tocHeader) ([]byte, error) 
 	e.celtEncoder.config.Bitrate = bitratePerChannel
 	e.celtEncoderR.config.Bitrate = bitratePerChannel
 
-	// Encode left channel
-	leftFrame, err := e.celtEncoder.EncodeFrame(leftSamples)
+	// Encode first channel (left or mid)
+	ch1Frame, err := e.celtEncoder.EncodeFrame(ch1Samples)
 	if err != nil {
-		return nil, fmt.Errorf("magnum: encode frame: CELT left: %w", err)
+		return nil, fmt.Errorf("magnum: encode frame: CELT ch1: %w", err)
 	}
 
-	// Encode right channel
-	rightFrame, err := e.celtEncoderR.EncodeFrame(rightSamples)
+	// Encode second channel (right or side)
+	ch2Frame, err := e.celtEncoderR.EncodeFrame(ch2Samples)
 	if err != nil {
-		return nil, fmt.Errorf("magnum: encode frame: CELT right: %w", err)
+		return nil, fmt.Errorf("magnum: encode frame: CELT ch2: %w", err)
 	}
 
-	// Build packet: TOC header + left CELT payload + right CELT payload
-	// In RFC 6716 dual mono, the two channel frames are simply concatenated
-	result := make([]byte, 1+len(leftFrame.Data)+len(rightFrame.Data))
+	// Build packet: TOC header + ch1 CELT payload + ch2 CELT payload
+	result := make([]byte, 1+len(ch1Frame.Data)+len(ch2Frame.Data))
 	result[0] = byte(toc)
-	copy(result[1:], leftFrame.Data)
-	copy(result[1+len(leftFrame.Data):], rightFrame.Data)
+	copy(result[1:], ch1Frame.Data)
+	copy(result[1+len(ch1Frame.Data):], ch2Frame.Data)
 
 	return result, nil
 }

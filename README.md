@@ -191,6 +191,35 @@ SILK wideband for 16 kHz). This encoder always produces single-frame packets
 * **Bitrate hint only** — `SetBitrate` is stored but not currently used.
 * **No resampling** — input must already be at the chosen sample rate.
 
+## Benchmarks
+
+Performance measurements on AMD Ryzen 7 7735HS, Go 1.24, linux/amd64:
+
+### Encoding (20 ms frames)
+
+| Codec Path | Sample Rate | Channels | Time/Op | Allocs |
+|------------|-------------|----------|---------|--------|
+| SILK       | 8 kHz       | Mono     | 37 µs   | 3      |
+| SILK       | 16 kHz      | Mono     | 48 µs   | 3      |
+| CELT       | 24 kHz      | Mono     | 584 µs  | 98     |
+| CELT       | 48 kHz      | Mono     | 68 µs   | 3      |
+| CELT       | 48 kHz      | Stereo   | 90 µs   | 3      |
+
+### Decoding (20 ms frames)
+
+| Codec Path | Sample Rate | Channels | Time/Op | Allocs |
+|------------|-------------|----------|---------|--------|
+| SILK       | 8 kHz       | Mono     | 4 µs    | 1      |
+| SILK       | 16 kHz      | Mono     | 9 µs    | 98     |
+| CELT       | 24 kHz      | Mono     | 120 µs  | 51     |
+| Decoder    | 48 kHz      | Mono     | 15 µs   | 3      |
+
+Run benchmarks locally:
+
+```sh
+go test -bench=. -benchmem -run=^$
+```
+
 ## Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for the full milestone plan covering the path

@@ -20,6 +20,9 @@ type MDCT struct {
 	n int
 	// window holds the pre-computed window coefficients.
 	window []float64
+	// cosTable holds pre-computed cosine values for the transform.
+	// Layout: cosTable[k*n + i] = cos(π/N * (i + 0.5 + N/4) * (k + 0.5))
+	cosTable []float64
 }
 
 // Supported MDCT sizes for Opus CELT codec.
@@ -44,9 +47,11 @@ func NewMDCT(n int) *MDCT {
 		return nil
 	}
 
+	n2 := n / 2
 	m := &MDCT{
-		n:      n,
-		window: make([]float64, n),
+		n:        n,
+		window:   make([]float64, n),
+		cosTable: make([]float64, n2*n),
 	}
 
 	// Pre-compute window coefficients using RFC 6716 formula:
@@ -56,6 +61,18 @@ func NewMDCT(n int) *MDCT {
 		sinSq := math.Sin(sinArg)
 		sinSq *= sinSq
 		m.window[i] = math.Sin(math.Pi / 2 * sinSq)
+	}
+
+	// Pre-compute cosine table for MDCT:
+	// cos(π/N * (i + 0.5 + N/4) * (k + 0.5))
+	n4 := float64(n) / 4.0
+	piOverN := math.Pi / float64(n)
+	for k := 0; k < n2; k++ {
+		kTerm := float64(k) + 0.5
+		for i := 0; i < n; i++ {
+			nTerm := float64(i) + 0.5 + n4
+			m.cosTable[k*n+i] = math.Cos(piOverN * nTerm * kTerm)
+		}
 	}
 
 	return m
@@ -93,20 +110,16 @@ func (m *MDCT) Forward(input []float64) []float64 {
 		windowed[i] = input[i] * m.window[i]
 	}
 
-	// Standard MDCT: X[k] = Σ x[n] * cos(π/N * (n + 0.5 + N/4) * (k + 0.5))
-	// for k = 0 to N/2-1, n = 0 to N-1
+	// Standard MDCT using pre-computed cosine table
 	output := make([]float64, m.n/2)
 	n2 := m.n / 2
-	n4 := float64(m.n) / 4.0
-	piOverN := math.Pi / float64(m.n)
+	n := m.n
 
 	for k := 0; k < n2; k++ {
 		sum := 0.0
-		kTerm := float64(k) + 0.5
-		for i := 0; i < m.n; i++ {
-			nTerm := float64(i) + 0.5 + n4
-			cos := math.Cos(piOverN * nTerm * kTerm)
-			sum += windowed[i] * cos
+		cosRow := m.cosTable[k*n:]
+		for i := 0; i < n; i++ {
+			sum += windowed[i] * cosRow[i]
 		}
 		output[k] = sum
 	}
@@ -127,18 +140,14 @@ func (m *MDCT) ForwardInto(input, out []float64) int {
 	}
 
 	n2 := m.n / 2
-	n4 := float64(m.n) / 4.0
-	piOverN := math.Pi / float64(m.n)
+	n := m.n
 
-	// Apply window and compute MDCT in one pass
+	// Apply window and compute MDCT using pre-computed cosine table
 	for k := 0; k < n2; k++ {
 		sum := 0.0
-		kTerm := float64(k) + 0.5
-		for i := 0; i < m.n; i++ {
-			windowed := input[i] * m.window[i]
-			nTerm := float64(i) + 0.5 + n4
-			cos := math.Cos(piOverN * nTerm * kTerm)
-			sum += windowed * cos
+		cosRow := m.cosTable[k*n:]
+		for i := 0; i < n; i++ {
+			sum += input[i] * m.window[i] * cosRow[i]
 		}
 		out[k] = sum
 	}
@@ -162,20 +171,16 @@ func (m *MDCT) Inverse(input []float64) []float64 {
 		return nil
 	}
 
-	// Perform IMDCT: x[n] = (2/N) * Σ X[k] * cos(π/N * (n + 0.5 + N/4) * (k + 0.5))
-	// for n = 0 to N-1, k = 0 to N/2-1
+	// Perform IMDCT using pre-computed cosine table
 	output := make([]float64, m.n)
-	n4 := float64(m.n) / 4.0
-	scale := 2.0 / float64(m.n)
-	piOverN := math.Pi / float64(m.n)
+	n := m.n
+	scale := 2.0 / float64(n)
 
-	for i := 0; i < m.n; i++ {
+	for i := 0; i < n; i++ {
 		sum := 0.0
-		nTerm := float64(i) + 0.5 + n4
+		// Access cosine values: cosTable[k*n + i] for each k
 		for k := 0; k < n2; k++ {
-			kTerm := float64(k) + 0.5
-			cos := math.Cos(piOverN * nTerm * kTerm)
-			sum += input[k] * cos
+			sum += input[k] * m.cosTable[k*n+i]
 		}
 		// Apply window and scale
 		output[i] = sum * scale * m.window[i]
@@ -194,22 +199,19 @@ func (m *MDCT) InverseInto(input, out []float64) int {
 		return 0
 	}
 
-	n4 := float64(m.n) / 4.0
-	scale := 2.0 / float64(m.n)
-	piOverN := math.Pi / float64(m.n)
+	n := m.n
+	scale := 2.0 / float64(n)
 
-	for i := 0; i < m.n; i++ {
+	for i := 0; i < n; i++ {
 		sum := 0.0
-		nTerm := float64(i) + 0.5 + n4
+		// Access cosine values: cosTable[k*n + i] for each k
 		for k := 0; k < n2; k++ {
-			kTerm := float64(k) + 0.5
-			cos := math.Cos(piOverN * nTerm * kTerm)
-			sum += input[k] * cos
+			sum += input[k] * m.cosTable[k*n+i]
 		}
 		out[i] = sum * scale * m.window[i]
 	}
 
-	return m.n
+	return n
 }
 
 // Window returns a copy of the pre-computed window coefficients.
