@@ -63,6 +63,9 @@ type SILKFrameEncoder struct {
 
 	// Frame counters
 	frameCount int
+
+	// Pre-allocated buffers to reduce allocations
+	residualBuf []float64 // Buffer for LPC residual computation
 }
 
 // SILKEncodedFrame holds the encoded SILK frame data.
@@ -127,6 +130,7 @@ func NewSILKFrameEncoder(config SILKFrameConfig) (*SILKFrameEncoder, error) {
 		prevPitchLags: make([]int, SILKSubFrames),
 		lpcOrder:      lpcOrder,
 		frameCount:    0,
+		residualBuf:   make([]float64, config.FrameSize),
 	}, nil
 }
 
@@ -167,8 +171,9 @@ func (enc *SILKFrameEncoder) EncodeFrame(samples []float64) (*SILKEncodedFrame, 
 	// Step 5: Pitch estimation and encoding (voiced frames only)
 	pitchLags := enc.processPitch(rc, samples, isVoiced, lpcResult.Coefficients)
 
-	// Step 6: Gain coding
-	residual := computeLPCResidual(samples, lpcResult.Coefficients)
+	// Step 6: Gain coding (use pre-allocated residual buffer)
+	computeLPCResidualInto(samples, lpcResult.Coefficients, enc.residualBuf)
+	residual := enc.residualBuf[:len(samples)]
 	subframeLen := enc.config.FrameSize / SILKSubFrames
 	frameGains := enc.gainCoder.ComputeGains(residual, subframeLen)
 	enc.encodeGains(rc, frameGains)
@@ -225,8 +230,18 @@ func (enc *SILKFrameEncoder) estimatePitchLags(samples []float64) []int {
 // computeLPCResidual computes the LPC residual (prediction error).
 func computeLPCResidual(samples, lpc []float64) []float64 {
 	n := len(samples)
-	order := len(lpc)
 	residual := make([]float64, n)
+	computeLPCResidualInto(samples, lpc, residual)
+	return residual
+}
+
+// computeLPCResidualInto computes the LPC residual into a pre-allocated buffer.
+func computeLPCResidualInto(samples, lpc, residual []float64) {
+	n := len(samples)
+	order := len(lpc)
+	if len(residual) < n {
+		return
+	}
 
 	for i := 0; i < n; i++ {
 		pred := 0.0
@@ -235,8 +250,6 @@ func computeLPCResidual(samples, lpc []float64) []float64 {
 		}
 		residual[i] = samples[i] - pred
 	}
-
-	return residual
 }
 
 // encodeExcitation encodes the excitation frame using the range coder.

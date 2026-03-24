@@ -62,6 +62,8 @@ type ExcitationEncoder struct {
 	subframeLen int
 	// prevSeed is the previous frame's seed (for decoder state).
 	prevSeed int
+	// Reusable buffers to reduce allocations
+	magnitudes []float64 // Pre-allocated buffer for magnitude values
 }
 
 // NewExcitationEncoder creates a new excitation encoder.
@@ -72,6 +74,7 @@ func NewExcitationEncoder(subframeLen int) *ExcitationEncoder {
 	return &ExcitationEncoder{
 		subframeLen: subframeLen,
 		prevSeed:    0,
+		magnitudes:  make([]float64, subframeLen), // Pre-allocate for typical subframe size
 	}
 }
 
@@ -157,8 +160,15 @@ func (ee *ExcitationEncoder) encodeSubframe(samples []float64, numPulsesHint int
 		return result
 	}
 
-	// Create a copy to mark used positions
-	magnitudes := make([]float64, n)
+	// Use pre-allocated buffer if large enough, otherwise allocate
+	var magnitudes []float64
+	if n <= len(ee.magnitudes) {
+		magnitudes = ee.magnitudes[:n]
+	} else {
+		// Grow buffer for future use
+		ee.magnitudes = make([]float64, n)
+		magnitudes = ee.magnitudes
+	}
 	for i := range samples {
 		magnitudes[i] = math.Abs(samples[i])
 	}

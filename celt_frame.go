@@ -79,11 +79,15 @@ func NewCELTFrameEncoder(config CELTFrameConfig) (*CELTFrameEncoder, error) {
 	// CELT bands range from 1 to ~192 coefficients; allocate for largest
 	maxBandSize := config.FrameSize / 2 // Safe upper bound
 
+	// Compute LM (log2 of frame duration) for energy quantization prediction coefficients
+	// LM = log2(frameSize / 120) where 120 is the minimum CELT frame size at 48kHz (2.5ms)
+	lm := computeLM(config.FrameSize)
+
 	return &CELTFrameEncoder{
 		config:     config,
 		mdct:       mdct,
 		pvq:        NewPVQ(),
-		eq:         NewEnergyQuantizer(NumCELTBands),
+		eq:         NewEnergyQuantizer(lm),
 		spread:     NewSpreadingAnalyzer(),
 		tf:         NewTFAnalyzer(NumCELTBands),
 		prevMDCT:   make([]float64, config.FrameSize),
@@ -315,11 +319,15 @@ func NewCELTFrameDecoder(config CELTFrameConfig) (*CELTFrameDecoder, error) {
 		return nil, ErrInvalidFrameSize
 	}
 
+	// Compute LM (log2 of frame duration) for energy quantization prediction coefficients
+	// LM = log2(frameSize / 120) where 120 is the minimum CELT frame size at 48kHz (2.5ms)
+	lm := computeLM(config.FrameSize)
+
 	return &CELTFrameDecoder{
 		config:   config,
 		mdct:     mdct,
 		pvq:      NewPVQ(),
-		eq:       NewEnergyQuantizer(NumCELTBands),
+		eq:       NewEnergyQuantizer(lm),
 		prevMDCT: make([]float64, config.FrameSize),
 	}, nil
 }
@@ -359,21 +367,35 @@ func (dec *CELTFrameDecoder) DecodeFrame(data []byte) ([]float64, error) {
 	// Decode spreading
 	spreadMode := DecodeSpread(rc)
 
-	// Compute bit budget
+	// Decode fine energy before PVQ to use consistent energy for allocation
+	// RFC 6716 §4.3 requires same energy for allocation and denormalization
+	var fineQuant [NumCELTBands]int
+	var fineBits [NumCELTBands]int
+	for i := 0; i < NumCELTBands; i++ {
+		fineQuant[i] = int(rc.DecodeBits(2))
+		fineBits[i] = 2
+	}
+
+	// Compute bit budget using actual frame structure
+	// Bits used so far: silence(1) + transient(1) + intra(1) + coarse(21*7) + TF(~21) + spread(2) + fine(21*2)
 	totalBits := dec.config.Bitrate * dec.config.FrameSize / dec.config.SampleRate
-	usedBits := 3 + NumCELTBands*7 + NumCELTBands + 2 // Estimate
-	pvqBits := totalBits - usedBits - 50
+	usedBits := 3 + NumCELTBands*7 + NumCELTBands + 2 + NumCELTBands*2
+	pvqBits := totalBits - usedBits - 20 // Reserve 20 bits for remaining overhead
 	if pvqBits < 0 {
 		pvqBits = 0
 	}
 
-	// Create dummy band energy for allocation
-	dummyEnergy := &BandEnergy{}
+	// Dequantize energy using proper inter-frame prediction (RFC 6716 §4.3.2)
+	// This ensures bit allocation uses the same energy as denormalization
+	bandEnergy := dec.eq.Dequantize(coarseQuant, fineQuant, fineBits, isIntra)
+
+	// Create band energy structure for allocation using the dequantized values
+	allocEnergy := &BandEnergy{}
 	for i := 0; i < NumCELTBands; i++ {
-		dummyEnergy.Valid[i] = true
-		dummyEnergy.LogEnergy[i] = float64(coarseQuant[i]) * coarseQuantStep
+		allocEnergy.Valid[i] = true
+		allocEnergy.LogEnergy[i] = bandEnergy[i]
 	}
-	bandBits := allocateBandBits(pvqBits, NumCELTBands, dummyEnergy)
+	bandBits := allocateBandBits(pvqBits, NumCELTBands, allocEnergy)
 
 	// Get scaled band boundaries
 	spectrumSize := dec.config.FrameSize / 2 // MDCT produces half the samples
@@ -383,7 +405,7 @@ func (dec *CELTFrameDecoder) DecodeFrame(data []byte) ([]float64, error) {
 	normalizedCoeffs := make([]float64, spectrumSize)
 
 	for i := 0; i < NumCELTBands; i++ {
-		if !dummyEnergy.Valid[i] || bandBits[i] <= 0 {
+		if !allocEnergy.Valid[i] || bandBits[i] <= 0 {
 			continue
 		}
 
@@ -423,18 +445,7 @@ func (dec *CELTFrameDecoder) DecodeFrame(data []byte) ([]float64, error) {
 		}
 	}
 
-	// Decode fine energy
-	var fineQuant [NumCELTBands]int
-	var fineBits [NumCELTBands]int
-	for i := 0; i < NumCELTBands; i++ {
-		fineQuant[i] = int(rc.DecodeBits(2))
-		fineBits[i] = 2
-	}
-
-	// Dequantize energy
-	bandEnergy := dec.eq.Dequantize(coarseQuant, fineQuant, fineBits, isIntra)
-
-	// Denormalize spectrum
+	// Denormalize spectrum using the already-dequantized band energy
 	mdctCoeffs := denormalizeSpectrum(normalizedCoeffs, bandEnergy[:], dec.config.FrameSize)
 
 	// Apply inverse MDCT
