@@ -133,11 +133,11 @@
 
 **Impact**: Improves compression efficiency for stereo content; completes documented TODOs.
 
-**Current state**: Dual mono encoding implemented for CELT and SILK codecs.
+**Current state**: Dual mono encoding implemented for CELT and SILK codecs. Stereo quality comparison tests added.
 
 - [x] **4.1** Implement proper dual mono encoding (see `encoder.go:507`).
 - [x] **4.2** Implement mid/side stereo coding (see `encoder.go:543`).
-- [ ] **4.3** Add tests comparing stereo quality vs. libopus at equivalent bitrates.
+- [x] **4.3** Add tests comparing stereo quality vs. libopus at equivalent bitrates. *Note: Test documents current stereo decoder limitation where CELT outputs mono duplicated to both channels.*
 
 **Validation**: PESQ/ViSQOL scores for stereo content within 0.5 MOS of libopus reference.
 
