@@ -2,21 +2,39 @@
 
 ## Project Context
 
-- **What it claims to do**: A minimal, pure-Go Opus-compatible audio encoder following pion/opus API patterns. The project aims to evolve from a simplified reference implementation (using `compress/flate` as a placeholder codec) to full RFC 6716 compliance with CELT, SILK, and hybrid modes for interoperability with libopus and pion/opus.
+- **What it claims to do**: A minimal, pure-Go Opus-compatible audio encoder following pion/opus API patterns. The README explicitly states this is a "simplified reference implementation" that wraps PCM frames in valid Opus TOC-header packets. It claims to implement:
+  - Pure-Go encoder with no CGO dependencies
+  - pion/opus API compatibility (`NewEncoder`, `Encode`, `Decode`, `Application`, `Bandwidth`)
+  - RFC 6716 TOC header generation
+  - Range coder (RFC 6716 §4.1)
+  - CELT encoder for 24/48 kHz
+  - SILK encoder for 8/16 kHz
+  - Variable frame durations (2.5, 5, 10, 20, 40, 60 ms)
+  - VAD, DTX, in-band FEC (LBRR), and PLC support
+  - Decoder for both magnum packets and standard Opus packets
 
 - **Target audience**: Go developers needing a pure-Go Opus encoder/decoder without CGO dependencies—particularly useful for WebRTC applications, embedded systems, and cross-compilation scenarios where libopus bindings are impractical.
 
-- **Architecture**: Single-package design (`github.com/opd-ai/magnum`) with 26 source files organized by codec component:
-  | Component | Files | Purpose |
-  |-----------|-------|---------|
-  | API Layer | `encoder.go`, `decoder.go`, `errors.go` | Public API surface |
-  | CELT Codec | `celt_frame.go`, `mdct.go`, `pvq.go`, `band_energy.go`, `spreading.go`, `bitalloc.go`, `postfilter.go` | Transform-based fullband coding |
-  | SILK Codec | `silk_frame.go`, `lpc.go`, `nlsf.go`, `pitch.go`, `ltp.go`, `gain.go`, `excitation.go`, `vad.go`, `dtx.go`, `lbrr.go`, `plc.go` | Speech-optimized narrowband/wideband coding |
-  | Hybrid | `hybrid.go` | Combined SILK+CELT for superwideband |
-  | Entropy | `range_coder.go` | RFC 6716 §4.1 arithmetic coding |
-  | Framing | `bitstream.go`, `frame.go` | TOC headers, multi-frame packets |
+- **Architecture**: Single-package design (`github.com/opd-ai/magnum`) with 26 source files:
 
-- **Existing CI/quality gates**: None. No GitHub Actions, GitLab CI, or Makefile present. Quality relies on manual `go test` and `go vet`.
+| Component | Files | Purpose |
+|-----------|-------|---------|
+| API Layer | `encoder.go`, `decoder.go`, `errors.go` | Public API surface |
+| CELT Codec | `celt_frame.go`, `mdct.go`, `pvq.go`, `band_energy.go`, `spreading.go`, `bitalloc.go`, `postfilter.go` | Transform-based fullband coding |
+| SILK Codec | `silk_frame.go`, `lpc.go`, `nlsf.go`, `pitch.go`, `ltp.go`, `gain.go`, `excitation.go`, `vad.go`, `dtx.go`, `lbrr.go`, `plc.go` | Speech-optimized narrowband/wideband coding |
+| Hybrid | `hybrid.go` | Combined SILK+CELT for superwideband |
+| Entropy | `range_coder.go` | RFC 6716 §4.1 arithmetic coding |
+| Framing | `bitstream.go`, `frame.go` | TOC headers, multi-frame packets |
+
+- **Existing CI/quality gates**:
+  - GitHub Actions CI (`.github/workflows/ci.yml`):
+    - `go build ./...`
+    - `go test -race -coverprofile=coverage.out ./...`
+    - `go vet ./...`
+    - Coverage threshold check (≥85%)
+    - Codecov badge integration
+    - Matrix testing: `linux/amd64`, `darwin/amd64`
+    - Conformance test job with official test vectors
 
 ---
 
@@ -24,24 +42,24 @@
 
 | Stated Goal | Status | Evidence | Gap Description |
 |-------------|--------|----------|-----------------|
-| **Pure-Go Opus-compatible encoder** | ✅ Achieved | `encoder.go:63-99` implements `Encoder` struct; tests pass | API complete |
+| **Pure-Go Opus-compatible encoder** | ✅ Achieved | `encoder.go` implements `Encoder` struct; `go.mod` has zero dependencies | API complete |
 | **pion/opus API compatibility** | ✅ Achieved | `NewEncoder`, `Encode`, `Decode`, `Application`, `Bandwidth` match pion patterns | Documented in README |
-| **RFC 6716 TOC header generation** | ✅ Achieved | `bitstream.go` implements Configuration constants, stereo flag, frame codes | Tested in `encoder_test.go` |
-| **Range coder (RFC 6716 §4.1)** | ✅ Achieved | `range_coder.go` with `RangeEncoder`/`RangeDecoder`; test vectors pass | 100% round-trip success |
-| **CELT encoder (48/24 kHz)** | ✅ Achieved | `celt_frame.go` (165 lines, complexity 25.7); MDCT, PVQ, band energy working | `TestCELTLibopusValidation` passes: 50 packets decoded by libopus |
-| **SILK encoder (8/16 kHz)** | ✅ Achieved | `silk_frame.go` (180 lines, complexity 38.4); LPC, NLSF, pitch, excitation | `TestSILKLibopusValidation` passes: 25 packets at 8kHz, 25 at 16kHz decoded by libopus |
-| **Hybrid mode (24 kHz SILK+CELT)** | ⚠️ Partial | `hybrid.go` implements band-splitting and dual encoding | **Packet format non-compliant**: `TestHybridLibopusValidation` skipped—proprietary multiplexing, not RFC 6716 configurations 12-19 |
-| **Variable frame durations** | ✅ Achieved | `FrameDuration` type with 2.5, 5, 10, 20, 40, 60 ms; `SetFrameDuration` API | `encoder.go:305-332` |
-| **Multi-frame packets (codes 1/2/3)** | ✅ Achieved | `decodePayloadWithReader` handles all frame codes | Tested in `decoder_test.go` |
+| **RFC 6716 TOC header generation** | ✅ Achieved | `bitstream.go` implements Configuration constants, stereo flag, frame codes | `TestConformance` parses all 12 official test vectors (20,075 packets) |
+| **Range coder (RFC 6716 §4.1)** | ✅ Achieved | `range_coder.go` with `RangeEncoder`/`RangeDecoder`; `range_coder_vectors_test.go` | Test vectors pass |
+| **CELT encoder (24/48 kHz)** | ✅ Achieved | `celt_frame.go` (381 lines); MDCT, PVQ, band energy, spreading | `TestCELTLibopusValidation` passes: 50 packets decoded by libopus |
+| **SILK encoder (8/16 kHz)** | ✅ Achieved | `silk_frame.go` (491 lines); LPC, NLSF, pitch, excitation | `TestSILKLibopusValidation` passes: 25 packets at 8kHz, 25 at 16kHz decoded by libopus |
+| **Hybrid mode (24 kHz SILK+CELT)** | ⚠️ Partial | `hybrid.go` implements band-splitting and dual encoding | Internal round-trip works; external libopus interop not validated with `opusdec` |
+| **Variable frame durations** | ✅ Achieved | `FrameDuration` type with 2.5, 5, 10, 20, 40, 60 ms; `SetFrameDuration` API | `bitstream.go:27-38` |
+| **Multi-frame packets (codes 1/2/3)** | ✅ Achieved | `conformance_test.go` parses code 3 packets from official test vectors | Test vectors contain code 3 packets |
 | **Decoder for magnum packets** | ✅ Achieved | `Decoder` type with `Decode`, `DecodeAlloc` | Works for CELT, SILK, flate fallback |
-| **Decoder for standard Opus packets** | ⚠️ Partial | CELT/SILK decode paths exist; PLC implemented | Hybrid decode path present but untested against libopus-generated packets |
+| **Decoder for standard Opus packets** | ⚠️ Partial | CELT/SILK decode paths exist; conformance tests parse all packets | Decoding produces audio but bit-exact conformance not verified |
 | **VAD and DTX** | ✅ Achieved | `vad.go`, `dtx.go` implement voice activity detection and discontinuous transmission | Unit tests pass |
-| **In-band FEC (LBRR)** | ✅ Achieved | `lbrr.go` implements Low-Bit-Rate Redundancy frames | Tests pass |
-| **PLC (Packet Loss Concealment)** | ✅ Achieved | `plc.go` with `PLCState`; `EnablePLC()` API | Fuzz-tested |
-| **Interoperability with libopus** | ⚠️ Partial | CELT and SILK packets validated | Hybrid mode blocked; conformance test vectors not integrated |
-| **Zero CGO / no external deps** | ✅ Achieved | `go.mod` shows no dependencies beyond stdlib | `go list -m all` confirms |
+| **In-band FEC (LBRR)** | ✅ Achieved | `lbrr.go` implements Low-Bit-Rate Redundancy frames | Unit tests pass |
+| **PLC (Packet Loss Concealment)** | ✅ Achieved | `plc.go` with `PLCState`; `EnablePLC()` API | Unit tests pass |
+| **Interoperability with libopus** | ⚠️ Partial | CELT and SILK packets validated via `opusdec` | Hybrid mode pending; bit-exact conformance not verified |
+| **Zero CGO / no external deps** | ✅ Achieved | `go.mod` shows `go 1.24.0` only | Verified |
 
-**Overall: 12/15 goals fully achieved, 3 partially achieved**
+**Overall: 13/16 goals fully achieved, 3 partially achieved**
 
 ---
 
@@ -49,139 +67,152 @@
 
 | Metric | Value | Assessment |
 |--------|-------|------------|
-| Lines of Code | 5,112 | Manageable for a single codec package |
-| Functions/Methods | 354 | Well-decomposed |
-| Test Coverage | 86.3% | Good; exceeds typical threshold |
-| High Complexity (>10) | 19 functions | 8.5% of codebase; acceptable for codec DSP |
-| Documentation Coverage | 94.8% | Excellent |
-| Duplication Ratio | 1.76% | Low; 8 clone pairs (183 lines) |
+| Lines of Code | 5,153 | Manageable for a single codec package |
+| Functions/Methods | 383 | Well-decomposed |
+| Test Coverage | 86.8% | Good; exceeds 85% threshold |
+| High Complexity (>10) | 14 functions | 3.7% of codebase; acceptable for codec DSP |
+| Documentation Coverage | 94.9% | Excellent |
+| Duplication Ratio | 1.58% | Low; 8 clone pairs (167 lines) |
 | `go vet` | Clean | No warnings |
 | `go test -race` | Pass | No data races |
 
 ### Risk Areas (Complexity)
 
-| Function | File | Lines | Complexity | Risk |
+| Function | File | Lines | Cyclomatic | Risk |
 |----------|------|-------|------------|------|
-| `EncodeFrame` | silk_frame.go | 180 | 38.4 | High—core SILK path, heavily branched |
-| `EncodeFrame` | celt_frame.go | 165 | 25.7 | Medium—core CELT path |
-| `decodeHybrid` | decoder.go | 70 | 24.6 | Medium—hybrid decode logic |
-| `decodePayloadWithReader` | decoder.go | 100 | 22.3 | Medium—frame code dispatch |
+| `DecodeFrame` | celt_frame.go | 122 | 15 | High—core CELT decode path |
+| `decodeAllocCELT` | decoder.go | 63 | 14 | Medium—CELT allocation logic |
+| `decodeAllocHybrid` | decoder.go | 63 | 14 | Medium—hybrid allocation logic |
+| `encodeSubframe` | excitation.go | 74 | 13 | Medium—SILK excitation coding |
+| `distributeBits` | bitalloc.go | 65 | 13 | Medium—bit allocation algorithm |
 
-### Open TODOs
+### Performance (from benchmarks)
 
-| Location | Description |
-|----------|-------------|
-| `encoder.go:507` | Implement proper dual mono encoding |
-| `encoder.go:543` | Implement proper mid/side stereo coding |
+| Codec Path | Sample Rate | Channels | Time/Op | Allocs |
+|------------|-------------|----------|---------|--------|
+| SILK       | 8 kHz       | Mono     | 35 µs   | 3      |
+| SILK       | 16 kHz      | Mono     | 48 µs   | 3      |
+| CELT       | 24 kHz      | Mono     | 551 µs  | 98     |
+| CELT       | 48 kHz      | Mono     | 65 µs   | 3      |
+| CELT       | 48 kHz      | Stereo   | 93 µs   | 3      |
+
+The 24 kHz path has notably higher allocations (98 vs 3) and latency, indicating optimization opportunity.
 
 ---
 
 ## Roadmap
 
-### Priority 1: RFC 6716–Compliant Hybrid Packet Format
+### Priority 1: External Hybrid Mode Validation
 
-**Impact**: Unblocks full interoperability with libopus for 24 kHz content. Hybrid mode is the only codec path failing external validation.
+**Impact**: High — completes the libopus interoperability story for all codec paths.
 
-**Current state**: `hybrid.go` uses RFC 6716-compliant format with SILK data followed by CELT data (no length prefix).
+**Current state**: `TestHybridLibopusValidation` passes internal round-trip but does not invoke `opusdec` for external validation.
 
-- [x] **1.1** Study RFC 6716 §3.1 hybrid multiplexing: configurations 12-15 (SWB) and 16-19 (FB) specify how SILK and CELT frames share the packet.
-- [x] **1.2** Implement correct bit-interleaving of SILK and CELT payloads per RFC 6716 §4.2.7.2 and §4.3.5.
-- [x] **1.3** Update `HybridEncoder.Encode()` to emit compliant packets.
-- [x] **1.4** Update `decodeHybrid()` to parse compliant hybrid packets.
-- [x] **1.5** Enable `TestHybridLibopusValidation` and confirm packets decode in `opusdec`.
+- [ ] **1.1** Add `opusdec` validation to `TestHybridLibopusValidation` matching the pattern in `TestCELTLibopusValidation`.
+- [ ] **1.2** If `opusdec` fails, analyze packet structure differences against RFC 6716 §4.2.7.2 (SILK in hybrid) and §4.3.5 (CELT in hybrid).
+- [ ] **1.3** Fix any packet format issues discovered.
+- [ ] **1.4** Confirm all hybrid test packets decode successfully in `opusdec`.
 
-**Validation**: `go test -v -run TestHybridLibopusValidation` passes; `opusdec` decodes without errors.
-
----
-
-### Priority 2: Conformance Test Vector Integration
-
-**Impact**: Provides confidence that encoder/decoder behavior matches the reference implementation; required for production use.
-
-**Current state**: Official test vectors integrated in testdata/opus_testvectors/; TestConformance verifies packet parsing.
-
-- [x] **2.1** Download official test vectors from `https://opus-codec.org/testvectors/`.
-- [x] **2.2** Create `testdata/` directory with vector files (input PCM + expected encoded output).
-- [x] **2.3** Implement `TestConformance` that decodes each vector with `magnum.Decoder` and compares against reference PCM.
-- [ ] **2.4** Add cross-encode tests: encode with magnum, decode with pion/opus (and vice-versa). *Blocked: pion/opus requires CGO, conflicts with pure-Go goal.*
-- [ ] **2.5** Integrate MOS-LQO scoring via `opus_compare` or pure-Go equivalent. *Blocked: requires external binary or CGO.*
-
-**Validation**: All official test vectors pass; cross-encode round-trips produce no errors.
+**Validation**: `go test -v -run TestHybridLibopusValidation` invokes `opusdec` and reports success.
 
 ---
 
-### Priority 3: CI Pipeline Setup
+### Priority 2: Bit-Exact Decoder Conformance
 
-**Impact**: Prevents regressions; enables contributor confidence and release automation.
+**Impact**: High — required for production use where magnum-decoded audio must match libopus output.
 
-**Current state**: CI configuration added in `.github/workflows/ci.yml`.
+**Current state**: Conformance tests parse all 12 official test vectors (20,075 packets) but do not compare decoded PCM against reference `.dec` files.
 
-- [x] **3.1** Create `.github/workflows/ci.yml` with:
-  - `go build ./...`
-  - `go test -race -coverprofile=coverage.out ./...`
-  - `go vet ./...`
-  - Coverage threshold check (maintain ≥85%)
-- [x] **3.2** Add matrix testing for `linux/amd64`, `linux/arm64`, `darwin/amd64`.
-- [x] **3.3** Add conformance test job (after Priority 2 is complete).
-- [x] **3.4** Publish coverage badge in README.
+- [ ] **2.1** Extend `TestConformance` to decode each packet and compare output against the corresponding `.dec` reference PCM.
+- [ ] **2.2** Track delta between magnum output and reference (RMS error, max sample difference).
+- [ ] **2.3** Identify which codec paths (SILK NB/MB/WB, CELT, Hybrid) have the largest deviations.
+- [ ] **2.4** Address deviations in order of impact (start with highest-use configurations).
 
-**Validation**: All CI checks pass on push/PR; badge displays current coverage.
+**Validation**: `go test -v -run TestConformance` compares PCM output and reports bit-exact match or bounded error.
 
 ---
 
-### Priority 4: Stereo Coding Improvements
+### Priority 3: 24 kHz Encoding Performance Optimization
 
-**Impact**: Improves compression efficiency for stereo content; completes documented TODOs.
+**Impact**: Medium — 24 kHz path is 10× slower and 30× more allocating than other paths.
 
-**Current state**: Dual mono encoding implemented for CELT and SILK codecs. Stereo quality comparison tests added.
+**Current state**: Benchmark shows 551 µs/op and 98 allocs for 24 kHz mono vs 65 µs/op and 3 allocs for 48 kHz mono.
 
-- [x] **4.1** Implement proper dual mono encoding (see `encoder.go:507`).
-- [x] **4.2** Implement mid/side stereo coding (see `encoder.go:543`).
-- [x] **4.3** Add tests comparing stereo quality vs. libopus at equivalent bitrates. *Note: Test documents current stereo decoder limitation where CELT outputs mono duplicated to both channels.*
+- [ ] **3.1** Profile `BenchmarkEncode24kMono` to identify hot paths.
+- [ ] **3.2** Pre-allocate MDCT/PVQ working buffers (likely cause of 98 allocs).
+- [ ] **3.3** Consider lookup tables for trigonometric computations in MDCT.
+- [ ] **3.4** Target ≤100 µs/op and ≤10 allocs/op.
 
-**Validation**: PESQ/ViSQOL scores for stereo content within 0.5 MOS of libopus reference.
-
----
-
-### Priority 5: Complexity Reduction in Core Paths
-
-**Impact**: Reduces bug risk and improves maintainability of the most critical code paths.
-
-**Current state**: `EncodeFrame` in `silk_frame.go` refactored (complexity reduced from 28 to 4). `celt_frame.go` still at complexity 19.
-
-- [x] **5.1** Extract logical subsections of `silk_frame.go:EncodeFrame` into helper functions (e.g., `encodeNLSF()`, `encodePitch()`, `encodeExcitation()`).
-- [x] **5.2** Apply similar decomposition to `celt_frame.go:EncodeFrame`.
-- [x] **5.3** Target complexity ≤15 per function.
-- [x] **5.4** Ensure all new helpers have unit tests.
-
-**Validation**: `go-stats-generator` reports no functions with complexity >15 in critical paths.
+**Validation**: `go test -bench=BenchmarkEncode24kMono -benchmem` shows improved metrics.
 
 ---
 
-### Priority 6: Performance Benchmarking
+### Priority 4: Stereo Decoder Completeness
 
-**Impact**: Quantifies production readiness; required for comparison with libopus.
+**Impact**: Medium — stereo content currently decodes as mono duplicated to both channels for CELT.
 
-**Current state**: Benchmarks added for all codec paths. MDCT optimized with precomputed cosine tables (14x speedup).
+**Current state**: Encoder has dual-mono and mid/side stereo modes. Decoder CELT path produces mono output.
 
-- [x] **6.1** Add `BenchmarkEncode` for each codec path (SILK 8k, SILK 16k, CELT 24k, CELT 48k, Hybrid).
-- [x] **6.2** Add `BenchmarkDecode` for each path.
-- [x] **6.3** Profile and optimize hot paths (MDCT, PVQ) targeting ≤3× libopus throughput.
-- [x] **6.4** Document benchmark results in README.
+- [ ] **4.1** Implement stereo CELT decoding (inverse mid/side transform, dual-mono reconstruction).
+- [ ] **4.2** Add tests comparing stereo round-trip quality.
+- [ ] **4.3** Verify stereo conformance test vectors decode correctly.
 
-**Validation**: Benchmarks exist; throughput documented; MDCT/PVQ optimized.
+**Validation**: `TestConformance/testvector01` (stereo CELT) produces correct L/R channels.
+
+---
+
+### Priority 5: Documentation Completeness
+
+**Impact**: Low — minor documentation gaps exist.
+
+**Current state**: 94.9% documentation coverage; 3 identifier naming violations; package name doesn't match directory.
+
+- [ ] **5.1** Add doc comments to undocumented types (5.9% missing).
+- [ ] **5.2** Rename `FrameDuration2_5ms` to follow Go naming conventions (e.g., `FrameDuration2p5ms`).
+- [ ] **5.3** Consider renaming package to `opus` if directory is renamed, or document why `magnum` is preferred.
+
+**Validation**: `go-stats-generator analyze . --skip-tests` shows 100% documentation coverage and no naming violations.
+
+---
+
+### Priority 6: Code Organization (Low Priority)
+
+**Impact**: Low — improves maintainability but doesn't affect functionality.
+
+**Current state**: 71 functions flagged as potentially misplaced; 5 files with low cohesion; 63-line duplicate block in decoder.go.
+
+- [ ] **6.1** Extract the 63-line duplicate in `decoder.go:469-531` and `decoder.go:536-598` into a shared helper.
+- [ ] **6.2** Evaluate moving error definitions from `errors.go` to their respective codec files.
+- [ ] **6.3** Split `decoder.go` (614 lines) into `decoder.go` (API) and `decoder_internal.go` (implementation).
+
+**Validation**: `go-stats-generator` shows reduced duplication ratio and improved file cohesion scores.
 
 ---
 
 ## Summary
 
-| Priority | Gap | Effort | Impact |
-|----------|-----|--------|--------|
-| P1 | Hybrid packet format | Medium | High—unblocks libopus interop |
-| P2 | Conformance vectors | Medium | High—production confidence |
-| P3 | CI pipeline | Low | Medium—prevents regressions |
-| P4 | Stereo coding | Medium | Medium—quality improvement |
-| P5 | Complexity reduction | Medium | Medium—maintainability |
-| P6 | Performance benchmarks | Low | Low—documentation |
+| Priority | Gap | Effort | Impact | Blocked By |
+|----------|-----|--------|--------|------------|
+| P1 | External hybrid validation | Low | High | — |
+| P2 | Bit-exact decoder conformance | Medium | High | — |
+| P3 | 24 kHz performance | Medium | Medium | — |
+| P4 | Stereo decoder completeness | Medium | Medium | — |
+| P5 | Documentation gaps | Low | Low | — |
+| P6 | Code organization | Low | Low | — |
 
-The project has achieved most of its stated goals. CELT and SILK produce libopus-decodable packets, the API matches pion/opus patterns, and the codebase is well-documented with 86% test coverage. The primary gap is **hybrid mode packet format compliance**—once resolved, the project will achieve full RFC 6716 interoperability. Adding CI and conformance tests will solidify the implementation for production use.
+The project has achieved its core stated goals: CELT and SILK produce libopus-decodable packets, the API matches pion/opus patterns, and the codebase is well-documented with 86.8% test coverage. The primary gaps are:
+
+1. **Hybrid mode external validation** — internal tests pass but `opusdec` validation is missing
+2. **Bit-exact decoder conformance** — packets parse but decoded PCM not compared to reference
+3. **24 kHz encoding performance** — 10× slower and 30× more allocating than other paths
+
+Addressing P1 and P2 would establish full RFC 6716 interoperability confidence. P3 would make 24 kHz encoding production-ready for real-time applications.
+
+### Competitive Context
+
+Compared to alternatives in the Go ecosystem:
+- **pion/opus**: Supports SILK decode only; magnum has broader codec coverage (CELT, SILK, Hybrid encode/decode)
+- **skrashevich/go-opus**: Full RFC 6716 via C transpilation; magnum is idiomatic Go but less complete
+- **libopus CGO bindings**: Production-grade but requires CGO; magnum's pure-Go approach is valuable for cross-compilation
+
+Magnum occupies a useful niche as the most complete *idiomatic* pure-Go Opus implementation. Completing the hybrid validation and bit-exact conformance would make it the clear choice for Go developers who cannot use CGO.
