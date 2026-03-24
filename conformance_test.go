@@ -356,14 +356,26 @@ func TestConformanceBitExact(t *testing.T) {
 					framesToDecode = 1
 				case 1:
 					framesToDecode = 2
-				case 2, 3:
-					// Variable frame packets - skip for now
-					stats.skipped++
-					// Advance ref offset by estimated frame count
-					// Code 3 has frame count in next byte, but we skip these
-					refOffset += frameSize * 2 // Conservative estimate
-					skippedFrameCode++
-					continue
+				case 2:
+					// Two different-size frames
+					framesToDecode = 2
+				case 3:
+					// Variable frame count - need to parse M byte
+					if len(pkt.data) >= 2 {
+						mByte := pkt.data[1]
+						framesToDecode = int(mByte >> 2)
+						if framesToDecode == 0 || framesToDecode > 48 {
+							stats.skipped++
+							refOffset += frameSize * 2 // Conservative estimate
+							skippedFrameCode++
+							continue
+						}
+					} else {
+						stats.skipped++
+						refOffset += frameSize * 2
+						skippedFrameCode++
+						continue
+					}
 				}
 
 				// Attempt decode

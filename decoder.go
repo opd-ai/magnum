@@ -360,6 +360,7 @@ func (d *Decoder) updatePLCState(samples []int16, count int) {
 }
 
 // validateTOCHeader validates the TOC header and returns stereo flag and config.
+// This version only accepts single-frame packets (frame code 0).
 func (d *Decoder) validateTOCHeader(packet []byte) (toc tocHeader, err error) {
 	if len(packet) < 2 {
 		return 0, ErrTooShortForTableOfContentsHeader
@@ -369,6 +370,33 @@ func (d *Decoder) validateTOCHeader(packet []byte) (toc tocHeader, err error) {
 	if toc.frameCode() != frameCodeOneFrame {
 		return 0, ErrUnsupportedFrameCode
 	}
+
+	stereo := toc.isStereo()
+	packetChannels := 1
+	if stereo {
+		packetChannels = 2
+	}
+	if packetChannels != d.channels {
+		return 0, fmt.Errorf("magnum: decode: %w", ErrChannelMismatch)
+	}
+
+	config := toc.configuration()
+	packetSampleRate := sampleRateForConfig(config)
+	if packetSampleRate != d.sampleRate {
+		return 0, fmt.Errorf("magnum: decode: %w", ErrSampleRateMismatch)
+	}
+
+	return toc, nil
+}
+
+// validateTOCHeaderMultiFrame validates TOC header allowing multi-frame packets.
+// Returns the TOC header for frame code inspection. Accepts frame codes 0, 1, 2, 3.
+func (d *Decoder) validateTOCHeaderMultiFrame(packet []byte) (toc tocHeader, err error) {
+	if len(packet) < 2 {
+		return 0, ErrTooShortForTableOfContentsHeader
+	}
+
+	toc = tocHeader(packet[0])
 
 	stereo := toc.isStereo()
 	packetChannels := 1
@@ -423,19 +451,193 @@ func clampToInt16(sample float64) int16 {
 	return int16(sample)
 }
 
-// decodeCELT decodes a CELT-encoded packet.
+// decodeCELT decodes a CELT-encoded packet, supporting multi-frame packets.
 func (d *Decoder) decodeCELT(packet []byte, out []int16) (int, error) {
-	_, err := d.validateTOCHeader(packet)
+	toc, err := d.validateTOCHeaderMultiFrame(packet)
 	if err != nil {
 		return 0, err
 	}
 
-	floatSamples, err := d.celtDecoder.DecodeFrame(packet[1:])
+	fc := toc.frameCode()
+	switch fc {
+	case frameCodeOneFrame:
+		floatSamples, err := d.celtDecoder.DecodeFrame(packet[1:])
+		if err != nil {
+			return 0, fmt.Errorf("magnum: decode: CELT: %w", err)
+		}
+		return d.convertFloatSamplesToInt16(floatSamples, out), nil
+
+	case frameCodeTwoEqualFrames:
+		return d.decodeCELTTwoEqualFrames(packet[1:], out)
+
+	case frameCodeTwoDifferentFrames:
+		return d.decodeCELTTwoDifferentFrames(packet[1:], out)
+
+	case frameCodeArbitraryFrames:
+		return d.decodeCELTArbitraryFrames(packet[1:], out)
+
+	default:
+		return 0, ErrUnsupportedFrameCode
+	}
+}
+
+// decodeCELTTwoEqualFrames decodes a frame code 1 packet (two equal-size frames).
+func (d *Decoder) decodeCELTTwoEqualFrames(payload []byte, out []int16) (int, error) {
+	if len(payload)%2 != 0 {
+		return 0, ErrInvalidFrameData
+	}
+	frameLen := len(payload) / 2
+	frame1 := payload[:frameLen]
+	frame2 := payload[frameLen:]
+
+	samples1, err := d.celtDecoder.DecodeFrame(frame1)
 	if err != nil {
-		return 0, fmt.Errorf("magnum: decode: CELT: %w", err)
+		return 0, fmt.Errorf("magnum: decode: CELT frame 1: %w", err)
 	}
 
-	return d.convertFloatSamplesToInt16(floatSamples, out), nil
+	samples2, err := d.celtDecoder.DecodeFrame(frame2)
+	if err != nil {
+		return 0, fmt.Errorf("magnum: decode: CELT frame 2: %w", err)
+	}
+
+	// Concatenate samples
+	allSamples := make([]float64, 0, len(samples1)+len(samples2))
+	allSamples = append(allSamples, samples1...)
+	allSamples = append(allSamples, samples2...)
+
+	return d.convertFloatSamplesToInt16(allSamples, out), nil
+}
+
+// decodeCELTTwoDifferentFrames decodes a frame code 2 packet (two different-size frames).
+func (d *Decoder) decodeCELTTwoDifferentFrames(payload []byte, out []int16) (int, error) {
+	if len(payload) < 1 {
+		return 0, ErrInvalidFrameData
+	}
+
+	frame1Len, consumed := decodeFrameLength(payload)
+	if consumed == 0 || consumed+frame1Len > len(payload) {
+		return 0, ErrInvalidFrameData
+	}
+
+	frame1 := payload[consumed : consumed+frame1Len]
+	frame2 := payload[consumed+frame1Len:]
+
+	samples1, err := d.celtDecoder.DecodeFrame(frame1)
+	if err != nil {
+		return 0, fmt.Errorf("magnum: decode: CELT frame 1: %w", err)
+	}
+
+	samples2, err := d.celtDecoder.DecodeFrame(frame2)
+	if err != nil {
+		return 0, fmt.Errorf("magnum: decode: CELT frame 2: %w", err)
+	}
+
+	allSamples := make([]float64, 0, len(samples1)+len(samples2))
+	allSamples = append(allSamples, samples1...)
+	allSamples = append(allSamples, samples2...)
+
+	return d.convertFloatSamplesToInt16(allSamples, out), nil
+}
+
+// decodeCELTArbitraryFrames decodes a frame code 3 packet (arbitrary frame count).
+func (d *Decoder) decodeCELTArbitraryFrames(payload []byte, out []int16) (int, error) {
+	if len(payload) < 1 {
+		return 0, ErrInvalidFrameData
+	}
+
+	mByte := payload[0]
+	frameCount := int(mByte >> 2)
+	isVBR := (mByte & 0x01) != 0
+	hasPadding := (mByte & 0x02) != 0
+
+	if frameCount == 0 || frameCount > 48 {
+		return 0, ErrInvalidFrameData
+	}
+
+	offset := 1
+
+	// Handle padding length bytes if present (RFC 6716 §3.2.1)
+	paddingLen := 0
+	if hasPadding {
+		for offset < len(payload) {
+			b := payload[offset]
+			offset++
+			paddingLen += int(b)
+			if b != 255 {
+				break
+			}
+		}
+	}
+
+	// Calculate actual frame data end (excluding padding bytes at the end)
+	frameDataEnd := len(payload) - paddingLen
+	if frameDataEnd <= offset {
+		return 0, ErrInvalidFrameData
+	}
+
+	var allSamples []float64
+
+	if !isVBR {
+		// CBR: all frames have equal size
+		frameData := payload[offset:frameDataEnd]
+		if len(frameData)%frameCount != 0 {
+			return 0, ErrInvalidFrameData
+		}
+		frameLen := len(frameData) / frameCount
+
+		for i := 0; i < frameCount; i++ {
+			frame := frameData[i*frameLen : (i+1)*frameLen]
+			samples, err := d.celtDecoder.DecodeFrame(frame)
+			if err != nil {
+				return 0, fmt.Errorf("magnum: decode: CELT frame %d: %w", i, err)
+			}
+			allSamples = append(allSamples, samples...)
+		}
+	} else {
+		// VBR: M-1 frame lengths come first, then all frame data (RFC 6716 §3.2.5)
+		// Parse all frame lengths first
+		frameLengths := make([]int, frameCount)
+		pos := offset
+		totalFrameLen := 0
+		for i := 0; i < frameCount-1; i++ {
+			if pos >= frameDataEnd {
+				return 0, ErrInvalidFrameData
+			}
+			frameLen, consumed := decodeFrameLength(payload[pos:frameDataEnd])
+			if consumed == 0 {
+				return 0, ErrInvalidFrameData
+			}
+			frameLengths[i] = frameLen
+			totalFrameLen += frameLen
+			pos += consumed
+		}
+
+		// Last frame uses remaining data
+		remainingData := frameDataEnd - pos - totalFrameLen
+		if remainingData < 0 {
+			return 0, ErrInvalidFrameData
+		}
+		frameLengths[frameCount-1] = remainingData
+
+		// Now decode all frames
+		dataStart := pos
+		for i := 0; i < frameCount; i++ {
+			frameLen := frameLengths[i]
+			if dataStart+frameLen > frameDataEnd {
+				return 0, ErrInvalidFrameData
+			}
+			frame := payload[dataStart : dataStart+frameLen]
+			dataStart += frameLen
+
+			samples, err := d.celtDecoder.DecodeFrame(frame)
+			if err != nil {
+				return 0, fmt.Errorf("magnum: decode: CELT frame %d: %w", i, err)
+			}
+			allSamples = append(allSamples, samples...)
+		}
+	}
+
+	return d.convertFloatSamplesToInt16(allSamples, out), nil
 }
 
 // decodeHybrid decodes a hybrid SILK+CELT encoded packet.
