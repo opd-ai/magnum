@@ -546,9 +546,11 @@ func (d *Decoder) decodeCELTArbitraryFrames(payload []byte, out []int16) (int, e
 	}
 
 	mByte := payload[0]
-	frameCount := int(mByte >> 2)
-	isVBR := (mByte & 0x01) != 0
-	hasPadding := (mByte & 0x02) != 0
+	// RFC 6716 §3.2.5: M byte layout is |v|p|     M     |
+	// v (VBR flag) is bit 7, p (padding flag) is bit 6, M (frame count) is bits 0-5
+	frameCount := int(mByte & 0x3F)
+	isVBR := (mByte & 0x80) != 0
+	hasPadding := (mByte & 0x40) != 0
 
 	if frameCount == 0 || frameCount > 48 {
 		return 0, ErrInvalidFrameData
@@ -924,8 +926,10 @@ func decodeArbitraryFrames(packet, buf, chunk []byte, stereo bool, config Config
 		return nil, false, 0, io.ErrUnexpectedEOF
 	}
 	mByte := packet[1]
-	frameCount := int(mByte >> 2)
-	isVBR := (mByte & 0x01) != 0
+	// RFC 6716 §3.2.5: M byte layout is |v|p|     M     |
+	// v (VBR flag) is bit 7, p (padding flag) is bit 6, M (frame count) is bits 0-5
+	frameCount := int(mByte & 0x3F)
+	isVBR := (mByte & 0x80) != 0
 
 	if frameCount == 0 || frameCount > 48 {
 		return nil, false, 0, ErrInvalidFrameData

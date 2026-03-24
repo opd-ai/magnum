@@ -840,13 +840,14 @@ func (e *Encoder) EncodeMultipleFrames(frames [][]int16) ([]byte, error) {
 
 	// Build frame code 3 packet
 	// Format: [TOC][M byte][len1][frame1][len2][frame2]...[lenM-1][frameM-1][frameM]
-	// M byte: bits 2-7 = frame count, bit 1 = padding (0), bit 0 = VBR (1)
+	// RFC 6716 §3.2.5: M byte layout is |v|p|     M     |
+	// v (VBR flag) is bit 7, p (padding flag) is bit 6, M (frame count) is bits 0-5
 	isStereo := e.channels == 2
 	config := configForSampleRateAndDuration(e.sampleRate, e.frameDuration)
 	toc := newTOCHeader(config, isStereo, frameCodeArbitraryFrames)
 
-	// M byte: frame count (shifted left 2) | padding=0 | VBR=1
-	mByte := byte(len(frames)<<2) | 0x01 // VBR mode, no padding
+	// M byte: VBR=1 (bit 7), padding=0 (bit 6), frame count (bits 0-5)
+	mByte := byte(len(frames)) | 0x80 // VBR mode, no padding
 
 	// Calculate total size
 	totalSize := 2 // TOC + M byte

@@ -1962,10 +1962,11 @@ func TestEncodeMultipleFramesCode3(t *testing.T) {
 		t.Errorf("Expected frame code %d (arbitrary), got %d", frameCodeArbitraryFrames, fc)
 	}
 
-	// Check M byte
+	// Check M byte (RFC 6716 §3.2.5)
+	// Layout: |v|p|     M     | - v (VBR) is bit 7, p (padding) is bit 6, M is bits 0-5
 	mByte := packet[1]
-	frameCount := int(mByte >> 2)
-	isVBR := (mByte & 0x01) != 0
+	frameCount := int(mByte & 0x3F)
+	isVBR := (mByte & 0x80) != 0
 	if frameCount != 4 {
 		t.Errorf("M byte frame count: got %d, want 4", frameCount)
 	}

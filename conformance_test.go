@@ -361,9 +361,11 @@ func TestConformanceBitExact(t *testing.T) {
 					framesToDecode = 2
 				case 3:
 					// Variable frame count - need to parse M byte
+					// RFC 6716 §3.2.5: M byte layout is |v|p|     M     |
+					// M (frame count) is in bits 0-5
 					if len(pkt.data) >= 2 {
 						mByte := pkt.data[1]
-						framesToDecode = int(mByte >> 2)
+						framesToDecode = int(mByte & 0x3F)
 						if framesToDecode == 0 || framesToDecode > 48 {
 							stats.skipped++
 							refOffset += frameSize * 2 // Conservative estimate
