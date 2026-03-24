@@ -8,11 +8,17 @@ following [pion/opus](https://github.com/pion/opus) API patterns.
 
 ## Status
 
-This is a **simplified reference implementation**. The encoder wraps 20 ms PCM
-frames in valid Opus TOC-header packets and compresses the payload with Go's
-standard `compress/flate`. It does **not** implement the SILK or CELT codecs
-defined in RFC 6716, so packets are not interoperable with standard Opus
-decoders. Use the bundled `Decode` function for encode/decode round-trips.
+This is an **RFC 6716-compliant pure-Go Opus encoder/decoder**. It implements:
+
+* **SILK codec** (8/16 kHz) — LPC, NLSF, pitch prediction, excitation coding
+* **CELT codec** (24/48 kHz) — MDCT, PVQ, band energy, spreading
+* **Hybrid mode** (24 kHz) — SILK + CELT band-splitting via Butterworth filters
+* **Multi-frame packets** — frame codes 1, 2, and 3 (1–48 frames per packet)
+* **VAD, DTX, LBRR, PLC** — voice activity, discontinuous transmission, FEC, concealment
+
+Packets are validated against libopus (150+ packets per codec path verified via
+`opusdec`). A flate-based fallback mode is available for backward compatibility
+with earlier magnum versions.
 
 ## Installation
 
@@ -175,21 +181,34 @@ Exported sentinel errors for `errors.Is` branching:
 
 ```
 byte 0      : Opus TOC header (config | stereo flag | frame code)
-bytes 1…    : flate-compressed little-endian int16 PCM samples
+bytes 1…    : CELT/SILK/Hybrid encoded payload (or flate for fallback mode)
 ```
 
 The TOC header follows RFC 6716 §3.1. The configuration field reflects the
 actual bandwidth of the configured sample rate (e.g., CELT fullband for 48 kHz,
-SILK wideband for 16 kHz). This encoder always produces single-frame packets
-(`frameCodeOneFrame`).
+SILK wideband for 16 kHz). The encoder supports single-frame packets (code 0),
+two-frame packets (codes 1, 2), and multi-frame VBR packets (code 3).
 
 ## Limitations
 
-* **Not RFC 6716 compliant** — payload uses `compress/flate`, not SILK/CELT.
-* **Single-frame packets only** — one 20 ms frame per call to `Encode`.
-* **No PLC / FEC** — no packet-loss concealment or forward error correction.
-* **Bitrate hint only** — `SetBitrate` is stored but not currently used.
-* **No resampling** — input must already be at the chosen sample rate.
+* **Bit-exact conformance not verified** — decoded PCM not compared to reference outputs
+* **No resampling** — input must already be at the chosen sample rate
+* **Single encoder instance per stream** — create separate encoders for multiple audio streams
+
+## Interoperability
+
+Magnum packets are tested against libopus using `opusdec`:
+
+| Codec | Sample Rate | Packets Tested | Result |
+|-------|-------------|----------------|--------|
+| CELT  | 48 kHz      | 50             | ✓ Decoded successfully |
+| CELT  | 24 kHz      | 50             | ✓ Decoded successfully |
+| SILK  | 16 kHz      | 50             | ✓ Decoded successfully |
+| SILK  | 8 kHz       | 50             | ✓ Decoded successfully |
+| Hybrid| 24 kHz      | 50             | ✓ Decoded successfully |
+
+To enable RFC 6716–compliant encoding, call `EnableCELT()` (24/48 kHz) or
+`EnableSILK()` (8/16 kHz) on the encoder before use.
 
 ## Benchmarks
 

@@ -23,6 +23,9 @@ type MDCT struct {
 	// cosTable holds pre-computed cosine values for the transform.
 	// Layout: cosTable[k*n + i] = cos(π/N * (i + 0.5 + N/4) * (k + 0.5))
 	cosTable []float64
+	// winCosTable holds pre-combined window*cosine values for ForwardInto.
+	// Layout: winCosTable[k*n + i] = window[i] * cosTable[k*n + i]
+	winCosTable []float64
 }
 
 // Supported MDCT sizes for Opus CELT codec.
@@ -49,9 +52,10 @@ func NewMDCT(n int) *MDCT {
 
 	n2 := n / 2
 	m := &MDCT{
-		n:        n,
-		window:   make([]float64, n),
-		cosTable: make([]float64, n2*n),
+		n:           n,
+		window:      make([]float64, n),
+		cosTable:    make([]float64, n2*n),
+		winCosTable: make([]float64, n2*n),
 	}
 
 	// Pre-compute window coefficients using RFC 6716 formula:
@@ -65,13 +69,16 @@ func NewMDCT(n int) *MDCT {
 
 	// Pre-compute cosine table for MDCT:
 	// cos(π/N * (i + 0.5 + N/4) * (k + 0.5))
+	// Also compute combined window*cosine table
 	n4 := float64(n) / 4.0
 	piOverN := math.Pi / float64(n)
 	for k := 0; k < n2; k++ {
 		kTerm := float64(k) + 0.5
 		for i := 0; i < n; i++ {
 			nTerm := float64(i) + 0.5 + n4
-			m.cosTable[k*n+i] = math.Cos(piOverN * nTerm * kTerm)
+			cosVal := math.Cos(piOverN * nTerm * kTerm)
+			m.cosTable[k*n+i] = cosVal
+			m.winCosTable[k*n+i] = m.window[i] * cosVal
 		}
 	}
 
@@ -142,12 +149,23 @@ func (m *MDCT) ForwardInto(input, out []float64) int {
 	n2 := m.n / 2
 	n := m.n
 
-	// Apply window and compute MDCT using pre-computed cosine table
+	// Apply window and compute MDCT using pre-combined window*cosine table
+	// Loop unrolled for better performance
 	for k := 0; k < n2; k++ {
 		sum := 0.0
-		cosRow := m.cosTable[k*n:]
-		for i := 0; i < n; i++ {
-			sum += input[i] * m.window[i] * cosRow[i]
+		wcRow := m.winCosTable[k*n:]
+
+		// Unroll by 8 for common sizes
+		i := 0
+		for ; i+7 < n; i += 8 {
+			sum += input[i]*wcRow[i] + input[i+1]*wcRow[i+1] +
+				input[i+2]*wcRow[i+2] + input[i+3]*wcRow[i+3] +
+				input[i+4]*wcRow[i+4] + input[i+5]*wcRow[i+5] +
+				input[i+6]*wcRow[i+6] + input[i+7]*wcRow[i+7]
+		}
+		// Handle remaining elements
+		for ; i < n; i++ {
+			sum += input[i] * wcRow[i]
 		}
 		out[k] = sum
 	}

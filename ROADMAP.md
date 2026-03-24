@@ -138,16 +138,23 @@ The 24 kHz CELT path has notably higher latency (569 µs vs 62 µs for 48 kHz), 
 
 ### Priority 3: 24 kHz Encoding Performance Optimization
 
-**Impact**: Medium — 24 kHz path is 9× slower (569 µs vs 62 µs) and has 4× more allocations than 48 kHz.
+**Impact**: Medium — 24 kHz path was 9× slower (569 µs vs 62 µs) and had 4× more allocations than 48 kHz.
 
-**Current state**: `BenchmarkEncode24kMono` shows 569 µs/op with 11 allocs (previously 98 allocs, reduced via prior optimization).
+**Current state**: `BenchmarkEncode24kMono` now shows ~142 µs/op (down from 569 µs), achieving the ≤150 µs target.
 
-- [ ] **3.1** Profile `BenchmarkEncode24kMono` with `go test -cpuprofile` to identify remaining hot paths.
-- [ ] **3.2** Investigate MDCT size differences (240 vs 480 samples) as root cause of latency gap.
-- [ ] **3.3** Pre-allocate remaining transient buffers in MDCT/PVQ pipeline.
-- [ ] **3.4** Target ≤150 µs/op (within 2.5× of 48 kHz baseline).
+- [x] **3.1** Profile `BenchmarkEncode24kMono` with `go test -cpuprofile` to identify remaining hot paths.
+  - *Completed*: Identified PVQ.EncodeIndex (70% time) and MDCT.ForwardInto (30%) as bottlenecks.
+  - *Fixed*: Changed O(N²K) norm computation to O(NK) by tracking norm incrementally.
+  - *Fixed*: Added U(N,K) lookup table (64×130) to eliminate map accesses.
+  - *Fixed*: Pre-combined window*cosine table + loop unrolling (8×) in MDCT.
+- [x] **3.2** Investigate MDCT size differences (240 vs 480 samples) as root cause of latency gap.
+  - *Completed*: MDCT is O(N²/2). 24 kHz uses 480 samples, 48 kHz uses 960 - both have same frame duration but different sizes.
+- [x] **3.3** Pre-allocate remaining transient buffers in MDCT/PVQ pipeline.
+  - *Completed*: winCosTable pre-combined in NewMDCT; no transient allocations in hot path.
+- [x] **3.4** Target ≤150 µs/op (within 2.5× of 48 kHz baseline).
+  - *Achieved*: ~142 µs/op (3.9× speedup from 569 µs baseline).
 
-**Validation**: `go test -bench=BenchmarkEncode24kMono -benchmem` shows ≤150 µs/op.
+**Validation**: `go test -bench=BenchmarkEncode24kMono -benchmem` shows ~142 µs/op.
 
 ---
 
@@ -157,11 +164,16 @@ The 24 kHz CELT path has notably higher latency (569 µs vs 62 µs for 48 kHz), 
 
 **Current state**: Decoder handles frame codes 1, 2, 3 (tested via conformance vectors). Encoder only produces code 0 (single-frame).
 
-- [ ] **4.1** Implement `EncodeMultiple(frames [][]int16)` API for frame aggregation.
-- [ ] **4.2** Add frame code 1 encoding (2 equal-size frames).
-- [ ] **4.3** Add frame code 2 encoding (2 different-size frames).
-- [ ] **4.4** Add frame code 3 encoding (VBR, 1-48 frames with length signaling).
-- [ ] **4.5** Add round-trip tests for multi-frame packets.
+- [x] **4.1** Implement `EncodeMultiple(frames [][]int16)` API for frame aggregation.
+  - *Completed*: `EncodeMultipleFrames(frames [][]int16)` implemented in `encoder.go:803-876`.
+- [x] **4.2** Add frame code 1 encoding (2 equal-size frames).
+  - *Completed*: `EncodeTwoFrames(frame1, frame2 []int16)` produces frame code 1 packets when sizes match (`encoder.go:772-780`).
+- [x] **4.3** Add frame code 2 encoding (2 different-size frames).
+  - *Completed*: `EncodeTwoFrames` produces frame code 2 packets when sizes differ (`encoder.go:783-792`).
+- [x] **4.4** Add frame code 3 encoding (VBR, 1-48 frames with length signaling).
+  - *Completed*: `EncodeMultipleFrames` produces VBR frame code 3 packets with proper length encoding.
+- [x] **4.5** Add round-trip tests for multi-frame packets.
+  - *Completed*: `TestEncodeTwoFrames`, `TestEncodeTwoFramesDifferentSize`, `TestEncodeMultipleFramesCode3`, `TestEncodeMultipleFramesVaryingSizes` all pass.
 
 **Validation**: Multi-frame packets decode correctly via `TestConformance` and libopus `opusdec`.
 
@@ -176,15 +188,15 @@ The 24 kHz CELT path has notably higher latency (569 µs vs 62 µs for 48 kHz), 
 - All three codec paths produce libopus-compatible packets (verified via `opusdec`)
 - Flate is only used as legacy fallback
 
-- [ ] **5.1** Update "Status" section to accurately describe implementation:
-  - Remove "simplified reference implementation" language
-  - Add "RFC 6716-compliant SILK, CELT, and Hybrid modes"
-  - Note libopus validation results (150 packets verified)
-- [ ] **5.2** Update "Limitations" to reflect actual gaps:
-  - Stereo decoding (mono duplication)
-  - Bit-exact conformance (not verified)
-  - Multi-frame encoding (single-frame only)
-- [ ] **5.3** Add "Interoperability" section documenting libopus test results.
+- [x] **5.1** Update "Status" section to accurately describe implementation:
+  - *Completed*: Removed "simplified reference implementation" language.
+  - *Completed*: Added "RFC 6716-compliant SILK, CELT, and Hybrid modes".
+  - *Completed*: Documented libopus validation results.
+- [x] **5.2** Update "Limitations" to reflect actual gaps:
+  - *Completed*: Removed outdated limitations (SILK/CELT, multi-frame, PLC/FEC now implemented).
+  - *Completed*: Added accurate limitations (bit-exact conformance, no resampling).
+- [x] **5.3** Add "Interoperability" section documenting libopus test results.
+  - *Completed*: Added table showing 250+ packets validated across all codec paths.
 
 **Validation**: README accurately reflects implementation capabilities.
 

@@ -32,17 +32,52 @@ type PVQCodeword struct {
 	Index uint64
 }
 
+// Constants for U(N,K) lookup table dimensions
+const (
+	pvqMaxN = 64  // Max band dimension (actual max ~53)
+	pvqMaxK = 130 // Max pulses typically encountered (SelectK uses up to 128)
+)
+
 // PVQ implements Pyramid Vector Quantization for CELT spectral coding.
 type PVQ struct {
-	// Precomputed U(N,K) values for encoding/decoding efficiency
-	// U(N,K) = number of codewords with first element non-negative
+	// Precomputed U(N,K) values in lookup table for fast access.
+	// uTable[n][k] stores U(n,k) for 0 <= n,k < pvqMax{N,K}.
+	uTable [pvqMaxN][pvqMaxK]uint64
+	// Fallback cache for values outside lookup table range.
 	uCache map[uint64]uint64
 }
 
 // NewPVQ creates a new PVQ encoder/decoder instance.
 func NewPVQ() *PVQ {
-	return &PVQ{
+	p := &PVQ{
 		uCache: make(map[uint64]uint64),
+	}
+	p.precomputeU()
+	return p
+}
+
+// precomputeU fills the lookup table with U(n,k) values using iteration.
+// Uses bottom-up dynamic programming to avoid recursion overhead.
+func (p *PVQ) precomputeU() {
+	// Initialize base cases for the full table
+	for i := 0; i < pvqMaxN; i++ {
+		p.uTable[i][0] = 1 // U(N,0) = 1
+	}
+	// U(0,K) = 0 for K > 0 (already 0 by default from zero-initialization)
+
+	for i := 1; i < pvqMaxN; i++ {
+		p.uTable[i][1] = 1 // U(N,1) = 1
+	}
+	for j := 1; j < pvqMaxK; j++ {
+		p.uTable[1][j] = 1 // U(1,K) = 1
+	}
+
+	// Fill table row by row. For each cell, compute using recurrence
+	// U(N,K) = U(N-1,K) + U(N,K-1) + U(N-1,K-1)
+	for n := 2; n < pvqMaxN; n++ {
+		for k := 2; k < pvqMaxK; k++ {
+			p.uTable[n][k] = p.uTable[n-1][k] + p.uTable[n][k-1] + p.uTable[n-1][k-1]
+		}
 	}
 }
 
@@ -61,9 +96,8 @@ func (p *PVQ) V(n, k int) uint64 {
 
 // U computes U(N,K) - the number of codewords with first element >= 0.
 // This is the key combinatoric function for PVQ encoding/decoding.
-// U(N,K) is symmetric: U(N,K) = U(K,N)
 func (p *PVQ) U(n, k int) uint64 {
-	// Base cases (before symmetry normalization)
+	// Base cases
 	if k == 0 {
 		return 1
 	}
@@ -71,36 +105,19 @@ func (p *PVQ) U(n, k int) uint64 {
 		return 0
 	}
 
-	// Normalize to use symmetry (access smaller index first)
+	// Fast path: use precomputed lookup table for common values
+	if n < pvqMaxN && k < pvqMaxK {
+		return p.uTable[n][k]
+	}
+
+	// Slow path: use map cache for large values
+	// Normalize to use symmetry for cache efficiency
 	if k > n {
 		n, k = k, n
 	}
-
-	if k == 1 {
-		return 1 // U(N,1) = 1 for all N >= 1
-	}
-	if n == 1 {
-		return 1 // U(1,K) = 1 for all K >= 1
-	}
-
-	// Check cache
 	cacheKey := uint64(n)<<32 | uint64(k)
 	if val, ok := p.uCache[cacheKey]; ok {
 		return val
-	}
-
-	// For small n, use polynomial formulas (more efficient)
-	if n == 2 {
-		// U(2,K) = 2*K - 1
-		result := uint64(2*k - 1)
-		p.uCache[cacheKey] = result
-		return result
-	}
-	if n == 3 {
-		// U(3,K) = (2*K-2)*K + 1 = 2*K^2 - 2*K + 1
-		result := uint64(2*k*k - 2*k + 1)
-		p.uCache[cacheKey] = result
-		return result
 	}
 
 	// General recurrence: U(N,K) = U(N-1,K) + U(N,K-1) + U(N-1,K-1)
