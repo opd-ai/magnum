@@ -17,6 +17,70 @@ import (
 // 48 kHz × 60 ms × 2 channels × 2 bytes/sample = 11 520 bytes.
 const maxDecompressedBytes = 65536
 
+// validateTOCForDecode validates a TOC header for single-frame decoding.
+// Returns the configuration byte or an error if validation fails.
+func validateTOCForDecode(packet []byte, expectedChannels, expectedSampleRate int) (Configuration, error) {
+	if len(packet) < 2 {
+		return 0, ErrTooShortForTableOfContentsHeader
+	}
+
+	toc := tocHeader(packet[0])
+	if toc.frameCode() != frameCodeOneFrame {
+		return 0, ErrUnsupportedFrameCode
+	}
+
+	// Validate channel configuration
+	stereo := toc.isStereo()
+	packetChannels := 1
+	if stereo {
+		packetChannels = 2
+	}
+	if packetChannels != expectedChannels {
+		return 0, fmt.Errorf("magnum: decode: %w", ErrChannelMismatch)
+	}
+
+	// Validate sample rate configuration
+	config := toc.configuration()
+	packetSampleRate := sampleRateForConfig(config)
+	if packetSampleRate != expectedSampleRate {
+		return 0, fmt.Errorf("magnum: decode: %w", ErrSampleRateMismatch)
+	}
+
+	return config, nil
+}
+
+// floatToInt16Samples converts float64 samples [-1, 1] to int16 with clamping.
+// If channels == 2 and input is mono, duplicates samples to both channels.
+func floatToInt16Samples(floatSamples []float64, channels int) []int16 {
+	if channels == 1 {
+		samples := make([]int16, len(floatSamples))
+		for i, s := range floatSamples {
+			sample := s * 32767.0
+			if sample > 32767 {
+				sample = 32767
+			} else if sample < -32768 {
+				sample = -32768
+			}
+			samples[i] = int16(sample)
+		}
+		return samples
+	}
+
+	// Stereo: duplicate mono to both channels (simplification)
+	samples := make([]int16, len(floatSamples)*2)
+	for i, s := range floatSamples {
+		sample := s * 32767.0
+		if sample > 32767 {
+			sample = 32767
+		} else if sample < -32768 {
+			sample = -32768
+		}
+		samples[i*2] = int16(sample)
+		samples[i*2+1] = int16(sample)
+	}
+	return samples
+}
+
 // Decoder is a simplified pure-Go Opus-compatible audio decoder.
 //
 // It follows the pion/opus API patterns and decodes packets produced by
@@ -466,31 +530,10 @@ func (d *Decoder) DecodeAlloc(packet []byte) ([]int16, error) {
 
 // decodeAllocCELT decodes a CELT-encoded packet and allocates the result.
 func (d *Decoder) decodeAllocCELT(packet []byte) ([]int16, error) {
-	if len(packet) < 2 {
-		return nil, ErrTooShortForTableOfContentsHeader
-	}
-
-	// Parse TOC header
-	toc := tocHeader(packet[0])
-	if toc.frameCode() != frameCodeOneFrame {
-		return nil, ErrUnsupportedFrameCode
-	}
-
-	// Validate channel configuration
-	stereo := toc.isStereo()
-	packetChannels := 1
-	if stereo {
-		packetChannels = 2
-	}
-	if packetChannels != d.channels {
-		return nil, fmt.Errorf("magnum: decode: %w", ErrChannelMismatch)
-	}
-
-	// Validate sample rate configuration
-	config := toc.configuration()
-	packetSampleRate := sampleRateForConfig(config)
-	if packetSampleRate != d.sampleRate {
-		return nil, fmt.Errorf("magnum: decode: %w", ErrSampleRateMismatch)
+	// Validate TOC header
+	_, err := validateTOCForDecode(packet, d.channels, d.sampleRate)
+	if err != nil {
+		return nil, err
 	}
 
 	// Decode CELT payload
@@ -501,63 +544,15 @@ func (d *Decoder) decodeAllocCELT(packet []byte) ([]int16, error) {
 	}
 
 	// Convert float64 samples to int16
-	var samples []int16
-	if d.channels == 1 {
-		samples = make([]int16, len(floatSamples))
-		for i, s := range floatSamples {
-			sample := s * 32767.0
-			if sample > 32767 {
-				sample = 32767
-			} else if sample < -32768 {
-				sample = -32768
-			}
-			samples[i] = int16(sample)
-		}
-	} else {
-		// Stereo: duplicate mono to both channels (simplification)
-		samples = make([]int16, len(floatSamples)*2)
-		for i, s := range floatSamples {
-			sample := s * 32767.0
-			if sample > 32767 {
-				sample = 32767
-			} else if sample < -32768 {
-				sample = -32768
-			}
-			samples[i*2] = int16(sample)
-			samples[i*2+1] = int16(sample)
-		}
-	}
-
-	return samples, nil
+	return floatToInt16Samples(floatSamples, d.channels), nil
 }
 
 // decodeAllocHybrid decodes a hybrid SILK+CELT encoded packet and allocates the result.
 func (d *Decoder) decodeAllocHybrid(packet []byte) ([]int16, error) {
-	if len(packet) < 2 {
-		return nil, ErrTooShortForTableOfContentsHeader
-	}
-
-	// Parse TOC header
-	toc := tocHeader(packet[0])
-	if toc.frameCode() != frameCodeOneFrame {
-		return nil, ErrUnsupportedFrameCode
-	}
-
-	// Validate channel configuration
-	stereo := toc.isStereo()
-	packetChannels := 1
-	if stereo {
-		packetChannels = 2
-	}
-	if packetChannels != d.channels {
-		return nil, fmt.Errorf("magnum: decode: %w", ErrChannelMismatch)
-	}
-
-	// Validate sample rate configuration
-	config := toc.configuration()
-	packetSampleRate := sampleRateForConfig(config)
-	if packetSampleRate != d.sampleRate {
-		return nil, fmt.Errorf("magnum: decode: %w", ErrSampleRateMismatch)
+	// Validate TOC header
+	_, err := validateTOCForDecode(packet, d.channels, d.sampleRate)
+	if err != nil {
+		return nil, err
 	}
 
 	// Decode hybrid payload
@@ -568,34 +563,7 @@ func (d *Decoder) decodeAllocHybrid(packet []byte) ([]int16, error) {
 	}
 
 	// Convert float64 samples to int16
-	var samples []int16
-	if d.channels == 1 {
-		samples = make([]int16, len(floatSamples))
-		for i, s := range floatSamples {
-			sample := s * 32767.0
-			if sample > 32767 {
-				sample = 32767
-			} else if sample < -32768 {
-				sample = -32768
-			}
-			samples[i] = int16(sample)
-		}
-	} else {
-		// Stereo: duplicate mono to both channels (simplification)
-		samples = make([]int16, len(floatSamples)*2)
-		for i, s := range floatSamples {
-			sample := s * 32767.0
-			if sample > 32767 {
-				sample = 32767
-			} else if sample < -32768 {
-				sample = -32768
-			}
-			samples[i*2] = int16(sample)
-			samples[i*2+1] = int16(sample)
-		}
-	}
-
-	return samples, nil
+	return floatToInt16Samples(floatSamples, d.channels), nil
 }
 
 // decodeAllocFlate decodes a flate-compressed packet and allocates the result.

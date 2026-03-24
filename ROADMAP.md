@@ -181,7 +181,7 @@ The 24 kHz path has notably higher allocations (98 vs 3) and latency, indicating
 
 **Current state**: 71 functions flagged as potentially misplaced; 5 files with low cohesion; 63-line duplicate block in decoder.go.
 
-- [ ] **6.1** Extract the 63-line duplicate in `decoder.go:469-531` and `decoder.go:536-598` into a shared helper.
+- [x] **6.1** Extract the 63-line duplicate in `decoder.go:469-531` and `decoder.go:536-598` into a shared helper.
 - [ ] **6.2** Evaluate moving error definitions from `errors.go` to their respective codec files.
 - [ ] **6.3** Split `decoder.go` (614 lines) into `decoder.go` (API) and `decoder_internal.go` (implementation).
 
