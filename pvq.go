@@ -158,63 +158,22 @@ func (p *PVQ) EncodeIndex(x []float64, k int, pulses, signs []int) uint64 {
 		return 0
 	}
 
-	// Normalize input to unit L2 norm
-	norm := 0.0
-	for i := 0; i < n; i++ {
-		norm += x[i] * x[i]
-	}
-	if norm > 0 {
-		norm = 1.0 / math.Sqrt(norm)
-		for i := 0; i < n; i++ {
-			x[i] *= norm
-		}
-	}
-
-	// Clear and initialize buffers
-	for i := 0; i < n; i++ {
-		pulses[i] = 0
-		if x[i] >= 0 {
-			signs[i] = 1
-		} else {
-			signs[i] = -1
-		}
-	}
-
-	// Allocate K pulses greedily with O(NK) complexity
-	// Track currentNorm incrementally instead of recomputing
-	currentNormSq := 0.0
-
-	for pulse := 0; pulse < k; pulse++ {
-		bestIdx := 0
-		bestGain := -math.MaxFloat64
-
-		for i := 0; i < n; i++ {
-			newPulse := pulses[i] + 1
-			// Gain formula: |x[i]| * newPulse / sqrt(currentNormSq + 2*pulses[i] + 1)
-			// Optimization: avoid Abs by using pre-computed sign
-			absX := x[i]
-			if signs[i] < 0 {
-				absX = -absX
-			}
-			// delta = (2*pulses[i] + 1) is the change in norm squared
-			gain := absX * float64(newPulse) / math.Sqrt(currentNormSq+float64(2*pulses[i]+1))
-			if gain > bestGain {
-				bestGain = gain
-				bestIdx = i
-			}
-		}
-		// Update currentNormSq for next iteration
-		// ||p||^2 increases by (2*p[i] + 1) when p[i] increments by 1
-		currentNormSq += float64(2*pulses[bestIdx] + 1)
-		pulses[bestIdx]++
-	}
-
+	allocatePulses(x, k, pulses, signs)
 	return p.encodeIndex(pulses, signs, n, k)
 }
 
-// encodeWithBuffers performs PVQ encoding with provided buffers.
-func (p *PVQ) encodeWithBuffers(x []float64, k int, pulses, signs []int) *PVQCodeword {
+// allocatePulses performs greedy pulse allocation for PVQ encoding.
+// This shared helper normalizes the input vector, initializes the pulse/sign
+// buffers, and allocates K pulses using an O(NK) greedy algorithm.
+//
+// The algorithm maximizes correlation between the reconstructed pulse vector
+// and the input by iteratively placing pulses where they provide the best
+// normalized gain improvement.
+func allocatePulses(x []float64, k int, pulses, signs []int) {
 	n := len(x)
+	if n == 0 || k == 0 {
+		return
+	}
 
 	// Normalize input to unit L2 norm
 	norm := 0.0
@@ -246,28 +205,34 @@ func (p *PVQ) encodeWithBuffers(x []float64, k int, pulses, signs []int) *PVQCod
 		bestIdx := 0
 		bestGain := -math.MaxFloat64
 
-		// Find position that maximizes correlation with target
 		for i := 0; i < n; i++ {
-			// Proposed pulse count at position i
 			newPulse := pulses[i] + 1
-
-			// Compute correlation gain using pre-computed sign
+			// Gain formula: |x[i]| * newPulse / sqrt(currentNormSq + 2*pulses[i] + 1)
+			// Optimization: avoid Abs by using pre-computed sign
 			absX := x[i]
 			if signs[i] < 0 {
 				absX = -absX
 			}
+			// delta = (2*pulses[i] + 1) is the change in norm squared
 			gain := absX * float64(newPulse) / math.Sqrt(currentNormSq+float64(2*pulses[i]+1))
-
 			if gain > bestGain {
 				bestGain = gain
 				bestIdx = i
 			}
 		}
-
 		// Update currentNormSq for next iteration
+		// ||p||^2 increases by (2*p[i] + 1) when p[i] increments by 1
 		currentNormSq += float64(2*pulses[bestIdx] + 1)
 		pulses[bestIdx]++
 	}
+}
+
+// encodeWithBuffers performs PVQ encoding with provided buffers.
+func (p *PVQ) encodeWithBuffers(x []float64, k int, pulses, signs []int) *PVQCodeword {
+	n := len(x)
+
+	// Use shared pulse allocation helper
+	allocatePulses(x, k, pulses, signs)
 
 	// Compute combinatoric index
 	index := p.encodeIndex(pulses, signs, n, k)
