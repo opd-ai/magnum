@@ -124,7 +124,7 @@
 
 ### LOW
 
-- [ ] **F-35: ApplyHammingWindow divides by zero for length-1 input** — `lpc.go:255-265` — Boundary — `n-1` denominator produces `NaN` for single-sample input. Unlikely in practice (minimum SILK frame is 160 samples). **Remediation**: Guard `if n <= 1 { return copy }`. Validate: `ApplyHammingWindow([]float64{1.0})`.
+- [x] **F-35: ApplyHammingWindow divides by zero for length-1 input** — `lpc.go:255-265` — Boundary — `n-1` denominator produces `NaN` for single-sample input. Unlikely in practice (minimum SILK frame is 160 samples). **Remediation**: Guard `if n <= 1 { return copy }`. Validate: `ApplyHammingWindow([]float64{1.0})`.
 
 - [ ] **F-36: Multi-frame flate decode allocates fresh flate reader per frame** — `decoder.go:1121-1133,1147-1158` — Performance — Ignores the reusable `flateR` field, creating unnecessary allocations on the decode hot path. **Remediation**: Reuse `d.flateR` with `Reset()`. Validate: benchmark before/after.
 
