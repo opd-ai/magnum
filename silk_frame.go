@@ -588,6 +588,20 @@ func (dec *SILKFrameDecoder) DecodeFrame(data []byte) ([]float64, error) {
 	copy(dec.prevPitchLags, pitchLags)
 	copy(dec.prevSamples, samples)
 
+	// Update PLC state for packet loss concealment
+	// Use first subframe's values as representative
+	pitchLag := 0
+	pitchGain := 0.0
+	gain := 0.0
+	if len(pitchLags) > 0 {
+		pitchLag = pitchLags[0]
+	}
+	if len(gains) > 0 {
+		gain = gains[0]
+		pitchGain = 0.5 // Default pitch gain estimate
+	}
+	dec.plc.UpdateFromDecoder(samples, lpcCoeffs, pitchLag, pitchGain, isVoiced, gain)
+
 	return samples, nil
 }
 

@@ -103,7 +103,7 @@ func NewPLCState(sampleRate, frameSize, channels int) *PLCState {
 		sampleRate:    sampleRate,
 		frameSize:     frameSize,
 		channels:      channels,
-		prevSamples:   make([]float64, frameSize),
+		prevSamples:   make([]float64, frameSize*channels),
 		randSeed:      12345,
 	}
 }
