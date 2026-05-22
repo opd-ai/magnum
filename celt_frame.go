@@ -100,6 +100,14 @@ func NewCELTFrameEncoder(config CELTFrameConfig) (*CELTFrameEncoder, error) {
 	}, nil
 }
 
+// Reset clears the encoder state including overlap history.
+func (enc *CELTFrameEncoder) Reset() {
+	for i := range enc.prevMDCT {
+		enc.prevMDCT[i] = 0
+	}
+	enc.frameCount = 0
+}
+
 // isValidFrameSize checks if the frame size is valid for CELT.
 func isValidFrameSize(size int) bool {
 	switch size {
@@ -330,6 +338,13 @@ func NewCELTFrameDecoder(config CELTFrameConfig) (*CELTFrameDecoder, error) {
 		eq:       NewEnergyQuantizer(lm),
 		prevMDCT: make([]float64, config.FrameSize),
 	}, nil
+}
+
+// Reset clears the decoder state including overlap history.
+func (dec *CELTFrameDecoder) Reset() {
+	for i := range dec.prevMDCT {
+		dec.prevMDCT[i] = 0
+	}
 }
 
 // DecodeFrame decodes a single CELT frame to PCM samples.

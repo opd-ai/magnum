@@ -112,7 +112,7 @@
 
 - [ ] **F-29: Code-3 flate decode ignores padding flag** — `decoder.go:1010-1023` — Logic — Arbitrary-frame flate path reads the M byte but ignores padding flag/length bytes per RFC 6716 §3.2.5. Padded code-3 packets are misparsed. **Remediation**: Parse and skip padding bytes before frame data. Validate: encode padded code-3 packet, decode successfully.
 
-- [ ] **F-30: Hybrid Reset() doesn't reset CELT sub-state** — `hybrid.go:235-243,431-440` — API contract — `Reset()` clears SILK state but not CELT encoder/decoder overlap/history. Post-reset frames may contain stale CELT state. **Remediation**: Also reset CELT encoder/decoder state in hybrid `Reset()`. Validate: encode, reset, encode silence, verify no residual audio.
+- [x] **F-30: Hybrid Reset() doesn't reset CELT sub-state** — `hybrid.go:235-243,431-440` — API contract — `Reset()` clears SILK state but not CELT encoder/decoder overlap/history. Post-reset frames may contain stale CELT state. **Remediation**: Also reset CELT encoder/decoder state in hybrid `Reset()`. Validate: encode, reset, encode silence, verify no residual audio.
 
 - [ ] **F-31: SILK encoder Reset() incomplete** — `silk_frame.go:324-337` — API contract — `Reset()` does not reset `gainCoder`, `pitchEstimate`, `ltpAnalyzer`, or `excEncoder`. Post-reset encoding depends on previous stream's state. **Remediation**: Reset all sub-components. Validate: encode, reset, encode new content, verify no cross-stream artifacts.
 

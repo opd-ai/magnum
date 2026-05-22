@@ -234,6 +234,9 @@ func (enc *HybridEncoder) SetBitrate(bitrate int) {
 // Reset resets the encoder state.
 func (enc *HybridEncoder) Reset() {
 	enc.silkEncoder.Reset()
+	if enc.celtEncoder != nil {
+		enc.celtEncoder.Reset()
+	}
 	for i := range enc.lowpassState {
 		enc.lowpassState[i] = 0
 	}
@@ -431,6 +434,9 @@ func isHybridFBConfig(config Configuration) bool {
 func (dec *HybridDecoder) Reset() {
 	if dec.silkDecoder != nil {
 		dec.silkDecoder.Reset()
+	}
+	if dec.celtDecoder != nil {
+		dec.celtDecoder.Reset()
 	}
 	for i := range dec.lowpassState {
 		dec.lowpassState[i] = 0
