@@ -90,6 +90,12 @@ func floatToInt16Samples(floatSamples []float64, channels int) []int16 {
 //
 // By default, the decoder uses flate decompression for backward compatibility.
 // To decode CELT-encoded packets, call [Decoder.EnableCELT].
+//
+// Concurrent Use: A Decoder instance is NOT safe for concurrent use by multiple
+// goroutines. Each goroutine should use its own Decoder instance. This design
+// follows the pattern of standard library types like json.Decoder and flate.Reader,
+// which reuse internal buffers for efficiency but require external synchronization
+// if shared across goroutines.
 type Decoder struct {
 	sampleRate int
 	channels   int
