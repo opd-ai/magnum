@@ -1036,7 +1036,6 @@ func (e *Encoder) encodeSilencePayload() []byte {
 //   - Length <= 251: single byte
 //   - Length >= 252: two bytes where length = first_byte + second_byte*4
 //     with first_byte in [252, 255]
-//
 // Returns an error if length exceeds maxFrameLength (1275 bytes).
 func encodeFrameLength(length int) ([]byte, error) {
 	if length < 0 {
