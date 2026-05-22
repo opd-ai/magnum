@@ -50,19 +50,19 @@
 
 - [ ] **F-8: CELT encode/decode bit order mismatch** — `celt_frame.go:157-160,370-390` — Logic — Encoder writes PVQ data before fine energy bits; decoder reads fine energy before PVQ. Non-silence CELT frames are parsed with shifted bit positions, producing garbage output. **Remediation**: Align encoder write order to match decoder read order (fine energy first, then PVQ). Validate: `go test -race -run TestCELT ./...`
 
-- [ ] **F-10: RangeEncoder.Bytes() mutates state on every call** — `range_coder.go:86-92` — API contract — Each call to `Bytes()` appends 4 flush bytes to the internal buffer. Multiple calls (which happen in `celt_frame.go:223,522` and `silk_frame.go:189`) corrupt the encoded stream and produce invalid packets. **Remediation**: Add a `finalized bool` guard; only flush once. Validate: `go test -race -run TestRangeEncoder ./...`
+- [x] **F-10: RangeEncoder.Bytes() mutates state on every call** — `range_coder.go:86-92` — API contract — Each call to `Bytes()` appends 4 flush bytes to the internal buffer. Multiple calls (which happen in `celt_frame.go:223,522` and `silk_frame.go:189`) corrupt the encoded stream and produce invalid packets. **Remediation**: Add a `finalized bool` guard; only flush once. Validate: `go test -race -run TestRangeEncoder ./...`
 
 - [ ] **F-3: Stereo CELT single-frame decode assumes equal channel sizes** — `decoder.go:527-545` — Logic — Stereo CELT single-frame decode blindly splits the payload in half. Per-channel CELT payloads are variable-length; unequal sizes desynchronize both channel decoders, corrupting output. **Remediation**: Encode an explicit channel-split length prefix or use M/S coding per RFC 6716 §4.3.1. Validate: encode stereo CELT with unequal-energy channels and verify round-trip.
 
 ### HIGH
 
-- [ ] **F-1: DecodeAlloc never updates PLC state** — `decoder.go:808-827` — Logic — `DecodeAlloc` decodes successfully but never calls `updatePLCState`. Subsequent `DecodePLC` uses stale/empty history and outputs silence instead of concealment. **Remediation**: Call `updatePLCState(out)` before returning from `DecodeAlloc`. Validate: `go test -race -run TestPLC ./...`
+- [x] **F-1: DecodeAlloc never updates PLC state** — `decoder.go:808-827` — Logic — `DecodeAlloc` decodes successfully but never calls `updatePLCState`. Subsequent `DecodePLC` uses stale/empty history and outputs silence instead of concealment. **Remediation**: Call `updatePLCState(out)` before returning from `DecodeAlloc`. Validate: `go test -race -run TestPLC ./...`
 
-- [ ] **F-2: DecodeAlloc rejects multi-frame CELT packets** — `decoder.go:831-848` — Logic — `DecodeAlloc` only handles single-frame code-0 CELT packets; valid code-1/2/3 packets are rejected. **Remediation**: Route multi-frame CELT through `decodeCELTArbitraryFrames` in `DecodeAlloc`. Validate: encode multi-frame CELT, decode with `DecodeAlloc`.
+- [x] **F-2: DecodeAlloc rejects multi-frame CELT packets** — `decoder.go:831-848` — Logic — `DecodeAlloc` only handles single-frame code-0 CELT packets; valid code-1/2/3 packets are rejected. **Remediation**: Route multi-frame CELT through `decodeCELTArbitraryFrames` in `DecodeAlloc`. Validate: encode multi-frame CELT, decode with `DecodeAlloc`.
 
 - [ ] **F-4: Multi-frame CELT stereo decodes as mono-duplicated** — `decoder.go:595-610,613-737` — Logic — Multi-frame CELT decode paths (`decodeCELTArbitraryFrames`) decode each frame as mono and duplicate samples into L/R. Stereo channel separation is lost. **Remediation**: Implement per-channel decode for stereo multi-frame paths. Validate: round-trip stereo multi-frame CELT.
 
-- [ ] **F-5: Pitch estimation always returns nil for valid SILK frames** — `pitch.go:109-113` — Logic — `maxLag*2` at 16 kHz = 576 > 320 (20ms frame); at 8 kHz = 288 > 160. The guard rejects every valid 20ms SILK frame, so pitch estimation is never performed, disabling voiced/LTP paths. **Remediation**: Change threshold to `maxLag + minLag` or use overlapping analysis with buffered history. Validate: `go test -race -run TestPitch ./...`
+- [x] **F-5: Pitch estimation always returns nil for valid SILK frames** — `pitch.go:109-113` — Logic — `maxLag*2` at 16 kHz = 576 > 320 (20ms frame); at 8 kHz = 288 > 160. The guard rejects every valid 20ms SILK frame, so pitch estimation is never performed, disabling voiced/LTP paths. **Remediation**: Change threshold to `maxLag + minLag` or use overlapping analysis with buffered history. Validate: `go test -race -run TestPitch ./...`
 
 - [ ] **F-6: Stereo SILK/CELT single-frame packets lack channel delimiter** — `encoder.go:621-625,693-696` — Logic/Framing — Stereo single-frame packets concatenate two variable-length channel payloads with no length prefix. The decoder cannot determine where channel 1 ends and channel 2 begins except by assuming equal lengths (which is wrong for CELT). **Remediation**: Prepend a 2-byte length for channel 1 payload, or use joint stereo coding. Validate: encode stereo with asymmetric content, verify decode.
 
@@ -92,11 +92,11 @@
 
 - [ ] **F-20: SetFrameDuration doesn't update stereo right-channel codecs** — `encoder.go:377-386` — Logic — `SetFrameDuration` updates `celtEncoder`/`silkEncoder` config but not `celtEncoderR`/`silkEncoderR`. Stereo channel 2 retains old frame size and produces mismatched packets. **Remediation**: Also update `*EncoderR` instances. Validate: stereo encode after `SetFrameDuration` change.
 
-- [ ] **F-21: encodeFrameLength allows overlength payloads** — `encoder.go:985-997` — Arithmetic — No rejection for lengths >1275 (Opus maximum per RFC 6716 §3.2.1). Large payloads wrap in the 2-byte encoding, producing malformed packets. **Remediation**: Return error or clamp at 1275. Validate: attempt encode of >1275-byte payload, verify error.
+- [x] **F-21: encodeFrameLength allows overlength payloads** — `encoder.go:985-997` — Arithmetic — No rejection for lengths >1275 (Opus maximum per RFC 6716 §3.2.1). Large payloads wrap in the 2-byte encoding, producing malformed packets. **Remediation**: Return error or clamp at 1275. Validate: attempt encode of >1275-byte payload, verify error.
 
-- [ ] **F-22: NLSF LPCToNLSF corrupts coefficients in-place** — `nlsf.go:62-65` — Logic — P/Q polynomial construction reuses already-mutated LPC coefficients, producing incorrect NLSF values. **Remediation**: Copy LPC coefficients before building P/Q polynomials. Validate: round-trip LPC→NLSF→LPC, verify reconstruction error < 1e-6.
+- [x] **F-22: NLSF LPCToNLSF corrupts coefficients in-place** — `nlsf.go:62-65` — Logic — P/Q polynomial construction reuses already-mutated LPC coefficients, producing incorrect NLSF values. **Remediation**: Copy LPC coefficients before building P/Q polynomials. Validate: round-trip LPC→NLSF→LPC, verify reconstruction error < 1e-6.
 
-- [ ] **F-23: BandEnd panics for band==NumCELTBands** — `band_energy.go:135-139` — Boundary safety — Guard `band > NumCELTBands` allows `band == 21`; accessing `celtBands[22]` on a 22-element array causes index-out-of-range panic. **Remediation**: Change guard to `band >= NumCELTBands`. Validate: `BandEnd(21)` should return -1.
+- [x] **F-23: BandEnd panics for band==NumCELTBands** — `band_energy.go:135-139` — Boundary safety — Guard `band > NumCELTBands` allows `band == 21`; accessing `celtBands[22]` on a 22-element array causes index-out-of-range panic. **Remediation**: Change guard to `band >= NumCELTBands`. Validate: `BandEnd(21)` should return -1.
 
 - [ ] **F-24: CELT decoder returns half-length output** — `celt_frame.go:455-461` — API contract — `DecodeFrame` returns `FrameSize/2` samples instead of `FrameSize`. A 20ms 48 kHz frame (960 samples) decodes to only 480 samples. **Remediation**: Return full `FrameSize` samples from MDCT synthesis. Validate: decode CELT frame, verify `len(output) == frameSize`.
 
@@ -104,15 +104,15 @@
 
 ### MEDIUM
 
-- [ ] **F-26: Decoder struct not safe for concurrent use** — `decoder.go:99-121` — Concurrency — `Decoder` reuses mutable internal buffers, readers, and PLC/CELT state with no synchronization. Concurrent calls to `Decode` race on shared state. **Remediation**: Document that `Decoder` is not goroutine-safe, or add a mutex. Validate: `go test -race` with concurrent decode test.
+- [x] **F-26: Decoder struct not safe for concurrent use** — `decoder.go:99-121` — Concurrency — `Decoder` reuses mutable internal buffers, readers, and PLC/CELT state with no synchronization. Concurrent calls to `Decode` race on shared state. **Remediation**: Document that `Decoder` is not goroutine-safe, or add a mutex. Validate: `go test -race` with concurrent decode test.
 
 - [ ] **F-27: Spreading TF decision ignored for bands >0** — `spreading.go:171-172,198-199` — Logic — `ApplyTFChange`/`InvertTFChange` always read `tf.TF[0]`; bands 1..N use band-0's TF decision instead of their own. **Remediation**: Index `tf.TF[band]` per band. Validate: encode frame with varying TF, verify per-band application.
 
-- [ ] **F-28: PVQ Encode mutates caller's input spectrum** — `pvq.go:172-188` — Data aliasing — `allocatePulses()` normalizes the input `x` slice in place. Callers who retain a reference to the spectrum see corrupted values after encoding. **Remediation**: Copy `x` before normalization. Validate: encode PVQ, verify original slice unchanged.
+- [x] **F-28: PVQ Encode mutates caller's input spectrum** — `pvq.go:172-188` — Data aliasing — `allocatePulses()` normalizes the input `x` slice in place. Callers who retain a reference to the spectrum see corrupted values after encoding. **Remediation**: Copy `x` before normalization. Validate: encode PVQ, verify original slice unchanged.
 
 - [ ] **F-29: Code-3 flate decode ignores padding flag** — `decoder.go:1010-1023` — Logic — Arbitrary-frame flate path reads the M byte but ignores padding flag/length bytes per RFC 6716 §3.2.5. Padded code-3 packets are misparsed. **Remediation**: Parse and skip padding bytes before frame data. Validate: encode padded code-3 packet, decode successfully.
 
-- [ ] **F-30: Hybrid Reset() doesn't reset CELT sub-state** — `hybrid.go:235-243,431-440` — API contract — `Reset()` clears SILK state but not CELT encoder/decoder overlap/history. Post-reset frames may contain stale CELT state. **Remediation**: Also reset CELT encoder/decoder state in hybrid `Reset()`. Validate: encode, reset, encode silence, verify no residual audio.
+- [x] **F-30: Hybrid Reset() doesn't reset CELT sub-state** — `hybrid.go:235-243,431-440` — API contract — `Reset()` clears SILK state but not CELT encoder/decoder overlap/history. Post-reset frames may contain stale CELT state. **Remediation**: Also reset CELT encoder/decoder state in hybrid `Reset()`. Validate: encode, reset, encode silence, verify no residual audio.
 
 - [ ] **F-31: SILK encoder Reset() incomplete** — `silk_frame.go:324-337` — API contract — `Reset()` does not reset `gainCoder`, `pitchEstimate`, `ltpAnalyzer`, or `excEncoder`. Post-reset encoding depends on previous stream's state. **Remediation**: Reset all sub-components. Validate: encode, reset, encode new content, verify no cross-stream artifacts.
 
@@ -124,9 +124,9 @@
 
 ### LOW
 
-- [ ] **F-35: ApplyHammingWindow divides by zero for length-1 input** — `lpc.go:255-265` — Boundary — `n-1` denominator produces `NaN` for single-sample input. Unlikely in practice (minimum SILK frame is 160 samples). **Remediation**: Guard `if n <= 1 { return copy }`. Validate: `ApplyHammingWindow([]float64{1.0})`.
+- [x] **F-35: ApplyHammingWindow divides by zero for length-1 input** — `lpc.go:255-265` — Boundary — `n-1` denominator produces `NaN` for single-sample input. Unlikely in practice (minimum SILK frame is 160 samples). **Remediation**: Guard `if n <= 1 { return copy }`. Validate: `ApplyHammingWindow([]float64{1.0})`.
 
-- [ ] **F-36: Multi-frame flate decode allocates fresh flate reader per frame** — `decoder.go:1121-1133,1147-1158` — Performance — Ignores the reusable `flateR` field, creating unnecessary allocations on the decode hot path. **Remediation**: Reuse `d.flateR` with `Reset()`. Validate: benchmark before/after.
+- [x] **F-36: Multi-frame flate decode allocates fresh flate reader per frame** — `decoder.go:1121-1133,1147-1158` — Performance — Ignores the reusable `flateR` field, creating unnecessary allocations on the decode hot path. **Remediation**: Reuse `d.flateR` with `Reset()`. Validate: benchmark before/after.
 
 - [ ] **F-37: 610 magic numbers throughout codebase** — various files — Maintainability — Numeric constants from RFC 6716 tables are used inline without named constants. Risk of transcription errors and maintenance burden. **Remediation**: Extract frequently-used values to named constants with RFC section references. Validate: `go build ./...`
 

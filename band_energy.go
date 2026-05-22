@@ -133,7 +133,7 @@ func BandStart(band int) int {
 // This is for the reference fullband 48 kHz (960-point MDCT, 480 bins).
 // Returns -1 for invalid band indices.
 func BandEnd(band int) int {
-	if band < 0 || band > NumCELTBands {
+	if band < 0 || band >= NumCELTBands {
 		return -1
 	}
 	return celtBands[band+1]

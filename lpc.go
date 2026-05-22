@@ -257,6 +257,10 @@ func ApplyHammingWindow(samples []float64) []float64 {
 	if n == 0 {
 		return nil
 	}
+	if n == 1 {
+		// Single sample: return as-is (window coefficient is 1.0)
+		return []float64{samples[0]}
+	}
 
 	output := make([]float64, n)
 	for i := range samples {

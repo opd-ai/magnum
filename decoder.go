@@ -17,6 +17,11 @@ import (
 // 48 kHz × 60 ms × 2 channels × 2 bytes/sample = 11 520 bytes.
 const maxDecompressedBytes = 65536
 
+// maxFrameLength is the maximum length of a single Opus frame in bytes,
+// as specified in RFC 6716 §3.2.1. Frames exceeding this length cannot
+// be encoded using the Opus variable-length frame length encoding.
+const maxFrameLength = 1275
+
 // validateTOCForDecode validates a TOC header for single-frame decoding.
 // Returns the configuration byte or an error if validation fails.
 func validateTOCForDecode(packet []byte, expectedChannels, expectedSampleRate int) (Configuration, error) {
@@ -90,6 +95,12 @@ func floatToInt16Samples(floatSamples []float64, channels int) []int16 {
 //
 // By default, the decoder uses flate decompression for backward compatibility.
 // To decode CELT-encoded packets, call [Decoder.EnableCELT].
+//
+// Concurrent Use: A Decoder instance is NOT safe for concurrent use by multiple
+// goroutines. Each goroutine should use its own Decoder instance. This design
+// follows the pattern of standard library types like json.Decoder and flate.Reader,
+// which reuse internal buffers for efficiency but require external synchronization
+// if shared across goroutines.
 type Decoder struct {
 	sampleRate int
 	channels   int
@@ -839,12 +850,56 @@ func (d *Decoder) decodeAllocCodec(packet []byte, decodeFn func([]byte) ([]float
 		return nil, fmt.Errorf("magnum: decode: %s: %w", codecName, err)
 	}
 
-	return floatToInt16Samples(floatSamples, d.channels), nil
+	out := floatToInt16Samples(floatSamples, d.channels)
+	
+	// Update PLC state for packet loss concealment
+	d.updatePLCState(out, len(out))
+	
+	return out, nil
 }
 
 // decodeAllocCELT decodes a CELT-encoded packet and allocates the result.
 func (d *Decoder) decodeAllocCELT(packet []byte) ([]int16, error) {
-	return d.decodeAllocCodec(packet, d.celtDecoder.DecodeFrame, "CELT")
+	// Parse TOC to get frame info
+	toc, err := d.validateTOCHeaderMultiFrame(packet)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Calculate expected sample count based on frame code and configuration
+	frameSize := d.sampleRate * 20 / 1000 // 20ms per frame
+	fc := toc.frameCode()
+	
+	var numFrames int
+	switch fc {
+	case frameCodeOneFrame:
+		numFrames = 1
+	case frameCodeTwoEqualFrames, frameCodeTwoDifferentFrames:
+		numFrames = 2
+	case frameCodeArbitraryFrames:
+		// For arbitrary frames, we'll need to allocate conservatively
+		// Maximum is 48 frames per packet (RFC 6716 §3.2)
+		numFrames = 48
+	default:
+		return nil, ErrUnsupportedFrameCode
+	}
+	
+	// Allocate output buffer
+	out := make([]int16, numFrames*frameSize*d.channels)
+	
+	// Use decodeCELT which handles all frame codes
+	n, err := d.decodeCELT(packet, out)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Trim to actual decoded samples
+	out = out[:n]
+	
+	// Update PLC state for packet loss concealment
+	d.updatePLCState(out, len(out))
+	
+	return out, nil
 }
 
 // decodeAllocHybrid decodes a hybrid SILK+CELT encoded packet and allocates the result.
@@ -882,6 +937,10 @@ func (d *Decoder) decodeAllocFlate(packet []byte) ([]int16, error) {
 	for i := range samples {
 		samples[i] = int16(binary.LittleEndian.Uint16(raw[i*2:]))
 	}
+	
+	// Update PLC state for packet loss concealment
+	d.updatePLCState(samples, len(samples))
+	
 	return samples, nil
 }
 
@@ -969,7 +1028,7 @@ func decodePayloadWithReader(packet, buf, chunk []byte, flateR io.ReadCloser) (r
 	case frameCodeTwoDifferentFrames:
 		return decodeTwoDifferentFrames(packet, buf, chunk, flateR, stereo, config)
 	case frameCodeArbitraryFrames:
-		return decodeArbitraryFrames(packet, buf, chunk, stereo, config)
+		return decodeArbitraryFrames(packet, buf, chunk, flateR, stereo, config)
 	default:
 		return nil, false, 0, ErrUnsupportedFrameCode
 	}
@@ -1003,7 +1062,7 @@ func decodeTwoDifferentFrames(packet, buf, chunk []byte, flateR io.ReadCloser, s
 }
 
 // decodeArbitraryFrames handles frame code 3: VBR or CBR multi-frame packets.
-func decodeArbitraryFrames(packet, buf, chunk []byte, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
+func decodeArbitraryFrames(packet, buf, chunk []byte, flateR io.ReadCloser, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
 	if len(packet) < 2 {
 		return nil, false, 0, io.ErrUnexpectedEOF
 	}
@@ -1018,13 +1077,13 @@ func decodeArbitraryFrames(packet, buf, chunk []byte, stereo bool, config Config
 	}
 
 	if !isVBR {
-		return decodeCBRFrames(packet[2:], frameCount, buf, chunk, stereo, config)
+		return decodeCBRFrames(packet[2:], frameCount, buf, chunk, flateR, stereo, config)
 	}
-	return decodeVBRFrames(packet, frameCount, buf, chunk, stereo, config)
+	return decodeVBRFrames(packet, frameCount, buf, chunk, flateR, stereo, config)
 }
 
 // decodeCBRFrames decodes CBR multi-frame packets (all frames same size).
-func decodeCBRFrames(payload []byte, frameCount int, buf, chunk []byte, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
+func decodeCBRFrames(payload []byte, frameCount int, buf, chunk []byte, flateR io.ReadCloser, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
 	if len(payload)%frameCount != 0 {
 		return nil, false, 0, ErrInvalidFrameData
 	}
@@ -1033,11 +1092,11 @@ func decodeCBRFrames(payload []byte, frameCount int, buf, chunk []byte, stereo b
 	for i := 0; i < frameCount; i++ {
 		frames[i] = payload[i*frameLen : (i+1)*frameLen]
 	}
-	return decodeMultipleFrames(frames, buf, chunk, stereo, config)
+	return decodeMultipleFrames(frames, buf, chunk, flateR, stereo, config)
 }
 
 // decodeVBRFrames decodes VBR multi-frame packets (variable frame sizes).
-func decodeVBRFrames(packet []byte, frameCount int, buf, chunk []byte, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
+func decodeVBRFrames(packet []byte, frameCount int, buf, chunk []byte, flateR io.ReadCloser, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
 	offset := 2
 	frames := make([][]byte, frameCount)
 	for i := 0; i < frameCount-1; i++ {
@@ -1056,7 +1115,7 @@ func decodeVBRFrames(packet []byte, frameCount int, buf, chunk []byte, stereo bo
 		offset += frameLen
 	}
 	frames[frameCount-1] = packet[offset:]
-	return decodeMultipleFrames(frames, buf, chunk, stereo, config)
+	return decodeMultipleFrames(frames, buf, chunk, flateR, stereo, config)
 }
 
 // decodeFlatePayload decompresses a single flate-compressed frame payload.
@@ -1121,13 +1180,13 @@ func decodeFlatePayload(payload, buf, chunk []byte, flateR io.ReadCloser, stereo
 // decodeTwoFrames decodes two flate-compressed frames and concatenates them.
 func decodeTwoFrames(frame1, frame2, buf, chunk []byte, flateR io.ReadCloser, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
 	// Decode first frame
-	raw1, _, _, err := decodeFlatePayload(frame1, nil, chunk, nil, stereo, config)
+	raw1, _, _, err := decodeFlatePayload(frame1, nil, chunk, flateR, stereo, config)
 	if err != nil {
 		return nil, false, 0, fmt.Errorf("decode frame 1: %w", err)
 	}
 
 	// Decode second frame
-	raw2, _, _, err := decodeFlatePayload(frame2, nil, chunk, nil, stereo, config)
+	raw2, _, _, err := decodeFlatePayload(frame2, nil, chunk, flateR, stereo, config)
 	if err != nil {
 		return nil, false, 0, fmt.Errorf("decode frame 2: %w", err)
 	}
@@ -1145,12 +1204,12 @@ func decodeTwoFrames(frame1, frame2, buf, chunk []byte, flateR io.ReadCloser, st
 }
 
 // decodeMultipleFrames decodes multiple flate-compressed frames and concatenates them.
-func decodeMultipleFrames(frames [][]byte, buf, chunk []byte, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
+func decodeMultipleFrames(frames [][]byte, buf, chunk []byte, flateR io.ReadCloser, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
 	var totalLen int
 	decodedFrames := make([][]byte, len(frames))
 
 	for i, frame := range frames {
-		raw, _, _, err := decodeFlatePayload(frame, nil, chunk, nil, stereo, config)
+		raw, _, _, err := decodeFlatePayload(frame, nil, chunk, flateR, stereo, config)
 		if err != nil {
 			return nil, false, 0, fmt.Errorf("decode frame %d: %w", i, err)
 		}

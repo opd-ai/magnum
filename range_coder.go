@@ -20,6 +20,8 @@ type RangeEncoder struct {
 	rng uint64
 	// buffer holds the encoded bytes.
 	buffer []byte
+	// finalized indicates whether Bytes() has already been called.
+	finalized bool
 }
 
 // NewRangeEncoder creates a new range encoder ready for encoding symbols.
@@ -83,11 +85,15 @@ func (e *RangeEncoder) normalize() {
 }
 
 // Bytes finalizes the encoding and returns the encoded byte stream.
+// Subsequent calls to Bytes() return the same finalized buffer.
 func (e *RangeEncoder) Bytes() []byte {
-	// Flush remaining bytes (output 4 more bytes to ensure complete state)
-	for i := 0; i < 4; i++ {
-		e.buffer = append(e.buffer, byte(e.low>>24))
-		e.low = (e.low << 8) & 0xFFFFFFFF
+	if !e.finalized {
+		// Flush remaining bytes (output 4 more bytes to ensure complete state)
+		for i := 0; i < 4; i++ {
+			e.buffer = append(e.buffer, byte(e.low>>24))
+			e.low = (e.low << 8) & 0xFFFFFFFF
+		}
+		e.finalized = true
 	}
 	return e.buffer
 }
@@ -97,6 +103,7 @@ func (e *RangeEncoder) Reset() {
 	e.low = 0
 	e.rng = 0x100000000
 	e.buffer = e.buffer[:0]
+	e.finalized = false
 }
 
 // RangeDecoder implements an arithmetic range decoder.

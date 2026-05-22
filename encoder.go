@@ -783,7 +783,10 @@ func (e *Encoder) EncodeTwoFrames(frame1, frame2 []int16) ([]byte, error) {
 	// Frame code 2: two different-size frames
 	// Packet: [TOC][length1][Frame1][Frame2]
 	toc := newTOCHeader(config, isStereo, frameCodeTwoDifferentFrames)
-	lenBytes := encodeFrameLength(len(payload1))
+	lenBytes, err := encodeFrameLength(len(payload1))
+	if err != nil {
+		return nil, fmt.Errorf("encode frame 1 length: %w", err)
+	}
 	result := make([]byte, 1+len(lenBytes)+len(payload1)+len(payload2))
 	result[0] = byte(toc)
 	copy(result[1:], lenBytes)
@@ -852,7 +855,11 @@ func (e *Encoder) EncodeMultipleFrames(frames [][]int16) ([]byte, error) {
 	// Calculate total size
 	totalSize := 2 // TOC + M byte
 	for i := 0; i < len(payloads)-1; i++ {
-		totalSize += len(encodeFrameLength(len(payloads[i])))
+		lenBytes, err := encodeFrameLength(len(payloads[i]))
+		if err != nil {
+			return nil, fmt.Errorf("encode frame %d length: %w", i, err)
+		}
+		totalSize += len(lenBytes)
 		totalSize += len(payloads[i])
 	}
 	totalSize += len(payloads[len(payloads)-1]) // Last frame (no length prefix)
@@ -863,7 +870,10 @@ func (e *Encoder) EncodeMultipleFrames(frames [][]int16) ([]byte, error) {
 
 	offset := 2
 	for i := 0; i < len(payloads)-1; i++ {
-		lenBytes := encodeFrameLength(len(payloads[i]))
+		lenBytes, err := encodeFrameLength(len(payloads[i]))
+		if err != nil {
+			return nil, fmt.Errorf("encode frame %d length: %w", i, err)
+		}
 		copy(result[offset:], lenBytes)
 		offset += len(lenBytes)
 		copy(result[offset:], payloads[i])
@@ -982,9 +992,16 @@ func (e *Encoder) encodeSilencePayload() []byte {
 //   - Length <= 251: single byte
 //   - Length >= 252: two bytes where length = first_byte + second_byte*4
 //     with first_byte in [252, 255]
-func encodeFrameLength(length int) []byte {
+// Returns an error if length exceeds maxFrameLength (1275 bytes).
+func encodeFrameLength(length int) ([]byte, error) {
+	if length < 0 {
+		return nil, fmt.Errorf("negative frame length: %d", length)
+	}
+	if length > maxFrameLength {
+		return nil, fmt.Errorf("frame length %d exceeds maximum %d", length, maxFrameLength)
+	}
 	if length <= 251 {
-		return []byte{byte(length)}
+		return []byte{byte(length)}, nil
 	}
 	// Two-byte encoding: length = first_byte + second_byte*4
 	// first_byte must be in [252, 255], so we use first_byte = 252 + (length % 4)
@@ -994,7 +1011,7 @@ func encodeFrameLength(length int) []byte {
 	// We want first_byte to be 252 + (length-252)%4 so that division is exact
 	firstByte := 252 + (length-252)%4
 	secondByte := (length - firstByte) / 4
-	return []byte{byte(firstByte), byte(secondByte)}
+	return []byte{byte(firstByte), byte(secondByte)}, nil
 }
 
 // decodeFrameLength decodes a frame length from the Opus variable-length format.

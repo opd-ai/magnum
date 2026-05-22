@@ -1908,7 +1908,10 @@ func TestEncodeFrameLengthRoundTrip(t *testing.T) {
 
 	tests := []int{0, 1, 100, 251, 252, 253, 500, 1000, 1275}
 	for _, length := range tests {
-		encoded := encodeFrameLength(length)
+		encoded, err := encodeFrameLength(length)
+		if err != nil {
+			t.Fatalf("Length %d: encode error: %v", length, err)
+		}
 		decoded, consumed := decodeFrameLength(encoded)
 		if decoded != length {
 			t.Errorf("Length %d: encoded=%v, decoded=%d", length, encoded, decoded)

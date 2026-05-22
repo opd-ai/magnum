@@ -108,7 +108,7 @@ func NewPitchEstimator(sampleRate int) *PitchEstimator {
 // Returns nil if the frame is too short for pitch analysis.
 func (pe *PitchEstimator) Estimate(samples []float64) *PitchEstimate {
 	n := len(samples)
-	if n < pe.maxLag*2 {
+	if n < pe.maxLag+pe.minLag {
 		return nil
 	}
 
