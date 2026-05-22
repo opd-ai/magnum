@@ -108,7 +108,7 @@
 
 - [ ] **F-27: Spreading TF decision ignored for bands >0** — `spreading.go:171-172,198-199` — Logic — `ApplyTFChange`/`InvertTFChange` always read `tf.TF[0]`; bands 1..N use band-0's TF decision instead of their own. **Remediation**: Index `tf.TF[band]` per band. Validate: encode frame with varying TF, verify per-band application.
 
-- [ ] **F-28: PVQ Encode mutates caller's input spectrum** — `pvq.go:172-188` — Data aliasing — `allocatePulses()` normalizes the input `x` slice in place. Callers who retain a reference to the spectrum see corrupted values after encoding. **Remediation**: Copy `x` before normalization. Validate: encode PVQ, verify original slice unchanged.
+- [x] **F-28: PVQ Encode mutates caller's input spectrum** — `pvq.go:172-188` — Data aliasing — `allocatePulses()` normalizes the input `x` slice in place. Callers who retain a reference to the spectrum see corrupted values after encoding. **Remediation**: Copy `x` before normalization. Validate: encode PVQ, verify original slice unchanged.
 
 - [ ] **F-29: Code-3 flate decode ignores padding flag** — `decoder.go:1010-1023` — Logic — Arbitrary-frame flate path reads the M byte but ignores padding flag/length bytes per RFC 6716 §3.2.5. Padded code-3 packets are misparsed. **Remediation**: Parse and skip padding bytes before frame data. Validate: encode padded code-3 packet, decode successfully.
 

@@ -175,22 +175,26 @@ func allocatePulses(x []float64, k int, pulses, signs []int) {
 		return
 	}
 
-	// Normalize input to unit L2 norm
+	// Copy input to avoid mutating caller's data
+	xNorm := make([]float64, n)
+	copy(xNorm, x)
+
+	// Normalize to unit L2 norm
 	norm := 0.0
 	for i := 0; i < n; i++ {
-		norm += x[i] * x[i]
+		norm += xNorm[i] * xNorm[i]
 	}
 	if norm > 0 {
 		norm = 1.0 / math.Sqrt(norm)
 		for i := 0; i < n; i++ {
-			x[i] *= norm
+			xNorm[i] *= norm
 		}
 	}
 
 	// Clear and initialize buffers
 	for i := 0; i < n; i++ {
 		pulses[i] = 0
-		if x[i] >= 0 {
+		if xNorm[i] >= 0 {
 			signs[i] = 1
 		} else {
 			signs[i] = -1
@@ -209,7 +213,7 @@ func allocatePulses(x []float64, k int, pulses, signs []int) {
 			newPulse := pulses[i] + 1
 			// Gain formula: |x[i]| * newPulse / sqrt(currentNormSq + 2*pulses[i] + 1)
 			// Optimization: avoid Abs by using pre-computed sign
-			absX := x[i]
+			absX := xNorm[i]
 			if signs[i] < 0 {
 				absX = -absX
 			}
