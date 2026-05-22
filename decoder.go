@@ -1023,7 +1023,7 @@ func decodePayloadWithReader(packet, buf, chunk []byte, flateR io.ReadCloser) (r
 	case frameCodeTwoDifferentFrames:
 		return decodeTwoDifferentFrames(packet, buf, chunk, flateR, stereo, config)
 	case frameCodeArbitraryFrames:
-		return decodeArbitraryFrames(packet, buf, chunk, stereo, config)
+		return decodeArbitraryFrames(packet, buf, chunk, flateR, stereo, config)
 	default:
 		return nil, false, 0, ErrUnsupportedFrameCode
 	}
@@ -1057,7 +1057,7 @@ func decodeTwoDifferentFrames(packet, buf, chunk []byte, flateR io.ReadCloser, s
 }
 
 // decodeArbitraryFrames handles frame code 3: VBR or CBR multi-frame packets.
-func decodeArbitraryFrames(packet, buf, chunk []byte, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
+func decodeArbitraryFrames(packet, buf, chunk []byte, flateR io.ReadCloser, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
 	if len(packet) < 2 {
 		return nil, false, 0, io.ErrUnexpectedEOF
 	}
@@ -1072,13 +1072,13 @@ func decodeArbitraryFrames(packet, buf, chunk []byte, stereo bool, config Config
 	}
 
 	if !isVBR {
-		return decodeCBRFrames(packet[2:], frameCount, buf, chunk, stereo, config)
+		return decodeCBRFrames(packet[2:], frameCount, buf, chunk, flateR, stereo, config)
 	}
-	return decodeVBRFrames(packet, frameCount, buf, chunk, stereo, config)
+	return decodeVBRFrames(packet, frameCount, buf, chunk, flateR, stereo, config)
 }
 
 // decodeCBRFrames decodes CBR multi-frame packets (all frames same size).
-func decodeCBRFrames(payload []byte, frameCount int, buf, chunk []byte, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
+func decodeCBRFrames(payload []byte, frameCount int, buf, chunk []byte, flateR io.ReadCloser, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
 	if len(payload)%frameCount != 0 {
 		return nil, false, 0, ErrInvalidFrameData
 	}
@@ -1087,11 +1087,11 @@ func decodeCBRFrames(payload []byte, frameCount int, buf, chunk []byte, stereo b
 	for i := 0; i < frameCount; i++ {
 		frames[i] = payload[i*frameLen : (i+1)*frameLen]
 	}
-	return decodeMultipleFrames(frames, buf, chunk, stereo, config)
+	return decodeMultipleFrames(frames, buf, chunk, flateR, stereo, config)
 }
 
 // decodeVBRFrames decodes VBR multi-frame packets (variable frame sizes).
-func decodeVBRFrames(packet []byte, frameCount int, buf, chunk []byte, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
+func decodeVBRFrames(packet []byte, frameCount int, buf, chunk []byte, flateR io.ReadCloser, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
 	offset := 2
 	frames := make([][]byte, frameCount)
 	for i := 0; i < frameCount-1; i++ {
@@ -1110,7 +1110,7 @@ func decodeVBRFrames(packet []byte, frameCount int, buf, chunk []byte, stereo bo
 		offset += frameLen
 	}
 	frames[frameCount-1] = packet[offset:]
-	return decodeMultipleFrames(frames, buf, chunk, stereo, config)
+	return decodeMultipleFrames(frames, buf, chunk, flateR, stereo, config)
 }
 
 // decodeFlatePayload decompresses a single flate-compressed frame payload.
@@ -1175,13 +1175,13 @@ func decodeFlatePayload(payload, buf, chunk []byte, flateR io.ReadCloser, stereo
 // decodeTwoFrames decodes two flate-compressed frames and concatenates them.
 func decodeTwoFrames(frame1, frame2, buf, chunk []byte, flateR io.ReadCloser, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
 	// Decode first frame
-	raw1, _, _, err := decodeFlatePayload(frame1, nil, chunk, nil, stereo, config)
+	raw1, _, _, err := decodeFlatePayload(frame1, nil, chunk, flateR, stereo, config)
 	if err != nil {
 		return nil, false, 0, fmt.Errorf("decode frame 1: %w", err)
 	}
 
 	// Decode second frame
-	raw2, _, _, err := decodeFlatePayload(frame2, nil, chunk, nil, stereo, config)
+	raw2, _, _, err := decodeFlatePayload(frame2, nil, chunk, flateR, stereo, config)
 	if err != nil {
 		return nil, false, 0, fmt.Errorf("decode frame 2: %w", err)
 	}
@@ -1199,12 +1199,12 @@ func decodeTwoFrames(frame1, frame2, buf, chunk []byte, flateR io.ReadCloser, st
 }
 
 // decodeMultipleFrames decodes multiple flate-compressed frames and concatenates them.
-func decodeMultipleFrames(frames [][]byte, buf, chunk []byte, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
+func decodeMultipleFrames(frames [][]byte, buf, chunk []byte, flateR io.ReadCloser, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
 	var totalLen int
 	decodedFrames := make([][]byte, len(frames))
 
 	for i, frame := range frames {
-		raw, _, _, err := decodeFlatePayload(frame, nil, chunk, nil, stereo, config)
+		raw, _, _, err := decodeFlatePayload(frame, nil, chunk, flateR, stereo, config)
 		if err != nil {
 			return nil, false, 0, fmt.Errorf("decode frame %d: %w", i, err)
 		}
