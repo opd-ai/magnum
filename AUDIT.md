@@ -94,7 +94,7 @@
 
 - [x] **F-21: encodeFrameLength allows overlength payloads** — `encoder.go:985-997` — Arithmetic — No rejection for lengths >1275 (Opus maximum per RFC 6716 §3.2.1). Large payloads wrap in the 2-byte encoding, producing malformed packets. **Remediation**: Return error or clamp at 1275. Validate: attempt encode of >1275-byte payload, verify error.
 
-- [ ] **F-22: NLSF LPCToNLSF corrupts coefficients in-place** — `nlsf.go:62-65` — Logic — P/Q polynomial construction reuses already-mutated LPC coefficients, producing incorrect NLSF values. **Remediation**: Copy LPC coefficients before building P/Q polynomials. Validate: round-trip LPC→NLSF→LPC, verify reconstruction error < 1e-6.
+- [x] **F-22: NLSF LPCToNLSF corrupts coefficients in-place** — `nlsf.go:62-65` — Logic — P/Q polynomial construction reuses already-mutated LPC coefficients, producing incorrect NLSF values. **Remediation**: Copy LPC coefficients before building P/Q polynomials. Validate: round-trip LPC→NLSF→LPC, verify reconstruction error < 1e-6.
 
 - [x] **F-23: BandEnd panics for band==NumCELTBands** — `band_energy.go:135-139` — Boundary safety — Guard `band > NumCELTBands` allows `band == 21`; accessing `celtBands[22]` on a 22-element array causes index-out-of-range panic. **Remediation**: Change guard to `band >= NumCELTBands`. Validate: `BandEnd(21)` should return -1.
 

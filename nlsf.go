@@ -59,9 +59,14 @@ func LPCToNLSF(lpc []float64) []float64 {
 
 	// P(z) = A(z) + z^-(order+1) * A(z^-1)
 	// Q(z) = A(z) - z^-(order+1) * A(z^-1)
+	// Save original values to avoid in-place corruption
+	pOrig := make([]float64, order+1)
+	qOrig := make([]float64, order+1)
+	copy(pOrig, p[:order+1])
+	copy(qOrig, q[:order+1])
 	for i := 0; i <= order; i++ {
-		p[i] += p[order-i]
-		q[i] -= q[order-i]
+		p[i] = pOrig[i] + pOrig[order-i]
+		q[i] = qOrig[i] - qOrig[order-i]
 	}
 	p[order+1] = 0
 	q[order+1] = 0
