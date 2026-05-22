@@ -839,7 +839,12 @@ func (d *Decoder) decodeAllocCodec(packet []byte, decodeFn func([]byte) ([]float
 		return nil, fmt.Errorf("magnum: decode: %s: %w", codecName, err)
 	}
 
-	return floatToInt16Samples(floatSamples, d.channels), nil
+	out := floatToInt16Samples(floatSamples, d.channels)
+	
+	// Update PLC state for packet loss concealment
+	d.updatePLCState(out, len(out))
+	
+	return out, nil
 }
 
 // decodeAllocCELT decodes a CELT-encoded packet and allocates the result.
@@ -882,6 +887,10 @@ func (d *Decoder) decodeAllocFlate(packet []byte) ([]int16, error) {
 	for i := range samples {
 		samples[i] = int16(binary.LittleEndian.Uint16(raw[i*2:]))
 	}
+	
+	// Update PLC state for packet loss concealment
+	d.updatePLCState(samples, len(samples))
+	
 	return samples, nil
 }
 
