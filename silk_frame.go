@@ -547,9 +547,15 @@ func (dec *SILKFrameDecoder) DecodeFrame(data []byte) ([]float64, error) {
 	isVoiced := vadFlag == 1
 
 	// Step 2: Check for LBRR data
-	// For simplicity, skip LBRR data if present
-	// Full implementation would use it for error correction
-	// LBRR decoding is optional for basic playback
+	// Read LBRR presence bit and skip LBRR data if present
+	lbrrPresent := rc.DecodeLogP(1)
+	if lbrrPresent == 1 {
+		// LBRR data is present - read length and skip the data
+		lbrrLen := int(rc.DecodeBits(8))
+		for i := 0; i < lbrrLen; i++ {
+			rc.DecodeBits(8) // skip LBRR byte
+		}
+	}
 
 	// Step 3: Decode NLSF coefficients
 	nlsfIndices := make([]int, dec.lpcOrder)

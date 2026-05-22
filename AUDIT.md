@@ -74,7 +74,7 @@
 
 - [ ] **F-11: Hybrid TOC never emitted** — `bitstream.go:193-220` — Logic — `configForSampleRateAndDuration()` maps 24/48 kHz exclusively to CELT configurations; hybrid configs (12/13/16/17) are unreachable. Hybrid-mode packets get CELT TOC headers, which confuse decoders expecting hybrid. **Remediation**: Add hybrid config selection when `encoder.hybrid` is active. Validate: encode hybrid, verify TOC byte matches expected config.
 
-- [ ] **F-12: SILK decode never consumes LBRR presence bit** — `silk_frame.go:158,341-364,536-545` — Logic — Encoder writes LBRR flag/length/data when enabled, but decoder never reads even the presence bit. All subsequent field reads are shifted by the LBRR overhead, corrupting the decoded frame. **Remediation**: Decoder must read and skip (or use) LBRR data before proceeding. Validate: enable LBRR, encode, decode, verify output.
+- [x] **F-12: SILK decode never consumes LBRR presence bit** — `silk_frame.go:158,341-364,536-545` — Logic — Encoder writes LBRR flag/length/data when enabled, but decoder never reads even the presence bit. All subsequent field reads are shifted by the LBRR overhead, corrupting the decoded frame. **Remediation**: Decoder must read and skip (or use) LBRR data before proceeding. Validate: enable LBRR, encode, decode, verify output.
 
 - [x] **F-13: Gain encode/decode mismatch** — `silk_frame.go:419-429,572-577` — Logic — Encoder writes delta-coded gain indices via `GainCoder`; decoder treats each 6-bit value as an absolute gain via `DequantizeGain`. Decoded gains bear no relation to encoded values. **Remediation**: Decoder must apply same delta decoding as encoder. Validate: encode known-gain frame, verify decoded gain matches.
 
@@ -100,7 +100,7 @@
 
 - [ ] **F-24: CELT decoder returns half-length output** — `celt_frame.go:455-461` — API contract — `DecodeFrame` returns `FrameSize/2` samples instead of `FrameSize`. A 20ms 48 kHz frame (960 samples) decodes to only 480 samples. **Remediation**: Return full `FrameSize` samples from MDCT synthesis. Validate: decode CELT frame, verify `len(output) == frameSize`.
 
-- [ ] **F-25: SetFrameDuration panics with active SILK on 40/60ms** — `encoder.go:377-386` — Logic/Boundary — `SetFrameDuration` mutates `config.FrameSize` but doesn't rebuild SILK internals. SILK subframe logic may access out-of-bounds on non-20ms frames. **Remediation**: Rebuild SILK encoder state when frame duration changes. Validate: `EnableSILK(); SetFrameDuration(40); Encode(...)`.
+- [x] **F-25: SetFrameDuration panics with active SILK on 40/60ms** — `encoder.go:377-386` — Logic/Boundary — `SetFrameDuration` mutates `config.FrameSize` but doesn't rebuild SILK internals. SILK subframe logic may access out-of-bounds on non-20ms frames. **Remediation**: Rebuild SILK encoder state when frame duration changes. Validate: `EnableSILK(); SetFrameDuration(40); Encode(...)`.
 
 ### MEDIUM
 

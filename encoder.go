@@ -388,9 +388,17 @@ func (e *Encoder) SetFrameDuration(duration FrameDuration) error {
 	if e.silkEncoder != nil {
 		frameSize := duration.Samples(e.sampleRate)
 		e.silkEncoder.config.FrameSize = frameSize
+		// Resize frame-dependent buffers
+		e.silkEncoder.residualBuf = make([]float64, frameSize)
+		// Reinitialize excitation encoder with new subframe length
+		subframeLen := frameSize / GainNumSubframes
+		e.silkEncoder.excEncoder = NewExcitationEncoder(subframeLen)
+		
 		// Also update right channel encoder for stereo
 		if e.silkEncoderR != nil {
 			e.silkEncoderR.config.FrameSize = frameSize
+			e.silkEncoderR.residualBuf = make([]float64, frameSize)
+			e.silkEncoderR.excEncoder = NewExcitationEncoder(subframeLen)
 		}
 	}
 
