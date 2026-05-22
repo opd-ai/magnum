@@ -140,7 +140,7 @@ func TestApplyTFChange(t *testing.T) {
 
 	// Apply TF change
 	tf := &TFResolution{TF: []int{1}, NumBands: 1}
-	ApplyTFChange(spectrum, tf, 0, 10, true) // shortBlocks=true
+	ApplyTFChange(spectrum, tf, 0, 0, 10, true) // bandIndex=0, shortBlocks=true
 
 	// Verify Haar transform was applied
 	// After Haar, values should be different
@@ -156,7 +156,7 @@ func TestApplyTFChange(t *testing.T) {
 	}
 
 	// Apply inverse and verify recovery
-	InvertTFChange(spectrum, tf, 0, 10, true)
+	InvertTFChange(spectrum, tf, 0, 0, 10, true)
 
 	for i := range spectrum {
 		if math.Abs(spectrum[i]-original[i]) > 1e-6 {
@@ -175,7 +175,7 @@ func TestApplyTFChangeNoOp(t *testing.T) {
 	copy(original, spectrum)
 
 	tf := &TFResolution{TF: []int{0}, NumBands: 1}
-	ApplyTFChange(spectrum, tf, 0, 10, true)
+	ApplyTFChange(spectrum, tf, 0, 0, 10, true)
 
 	for i := range spectrum {
 		if spectrum[i] != original[i] {
@@ -412,7 +412,7 @@ func BenchmarkApplyTFChange(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		ApplyTFChange(spectrum, tf, 0, 480, true)
+		ApplyTFChange(spectrum, tf, 0, 0, 480, true)
 	}
 }
 

@@ -1622,6 +1622,46 @@ func TestSetFrameDuration(t *testing.T) {
 	}
 }
 
+func TestSetFrameDuration_ReinitializesCELTBuffers(t *testing.T) {
+	t.Parallel()
+
+	enc, err := NewEncoder(48000, 2)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+	if err := enc.EnableCELT(); err != nil {
+		t.Fatalf("EnableCELT: %v", err)
+	}
+
+	if got := len(enc.celtEncoder.prevMDCT); got != FrameDuration20ms.Samples(48000) {
+		t.Fatalf("initial CELT buffer length = %d, want %d", got, FrameDuration20ms.Samples(48000))
+	}
+
+	if err := enc.SetFrameDuration(FrameDuration10ms); err != nil {
+		t.Fatalf("SetFrameDuration: %v", err)
+	}
+
+	wantFrameSize := FrameDuration10ms.Samples(48000)
+	if got := enc.celtEncoder.config.FrameSize; got != wantFrameSize {
+		t.Fatalf("left CELT frame size = %d, want %d", got, wantFrameSize)
+	}
+	if got := len(enc.celtEncoder.prevMDCT); got != wantFrameSize {
+		t.Fatalf("left CELT prevMDCT length = %d, want %d", got, wantFrameSize)
+	}
+	if got := len(enc.celtEncoder.mdctCoeffs); got != wantFrameSize/2 {
+		t.Fatalf("left CELT mdctCoeffs length = %d, want %d", got, wantFrameSize/2)
+	}
+	if got := enc.celtEncoderR.config.FrameSize; got != wantFrameSize {
+		t.Fatalf("right CELT frame size = %d, want %d", got, wantFrameSize)
+	}
+	if got := len(enc.celtEncoderR.prevMDCT); got != wantFrameSize {
+		t.Fatalf("right CELT prevMDCT length = %d, want %d", got, wantFrameSize)
+	}
+	if got := len(enc.celtEncoderR.mdctCoeffs); got != wantFrameSize/2 {
+		t.Fatalf("right CELT mdctCoeffs length = %d, want %d", got, wantFrameSize/2)
+	}
+}
+
 // TestFrameDurationEncodeDecode verifies that encoding with different frame durations
 // produces valid packets that can be decoded.
 func TestFrameDurationEncodeDecode(t *testing.T) {

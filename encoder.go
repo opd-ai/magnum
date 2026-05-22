@@ -184,7 +184,7 @@ func (e *Encoder) EnableCELT() error {
 	}
 
 	if e.celtEncoder == nil {
-		frameSize := e.sampleRate * frameDurationMs / 1000 // Samples per channel
+		frameSize := int(float64(e.sampleRate) * float64(e.frameDuration) / 1000.0) // Samples per channel
 		// Note: CELT internally processes mono; for stereo, we use dual mono
 		celtConfig := CELTFrameConfig{
 			SampleRate: e.sampleRate,
@@ -235,7 +235,7 @@ func (e *Encoder) EnableSILK() error {
 	}
 
 	if e.silkEncoder == nil {
-		frameSize := e.sampleRate * frameDurationMs / 1000 // Samples per channel
+		frameSize := int(float64(e.sampleRate) * float64(e.frameDuration) / 1000.0) // Samples per channel
 		// Note: SILK internally processes mono; for stereo, we use dual mono
 		silkConfig := SILKFrameConfig{
 			SampleRate: e.sampleRate,
@@ -377,13 +377,47 @@ func (e *Encoder) SetFrameDuration(duration FrameDuration) error {
 	// Update CELT encoder if active
 	if e.celtEncoder != nil {
 		frameSize := duration.Samples(e.sampleRate)
-		e.celtEncoder.config.FrameSize = frameSize
+		bitratePerChannel := e.bitrate
+		if e.channels == 2 {
+			bitratePerChannel = e.bitrate / 2
+		}
+		celtConfig := CELTFrameConfig{
+			SampleRate: e.sampleRate,
+			Channels:   1,
+			FrameSize:  frameSize,
+			Bitrate:    bitratePerChannel,
+		}
+		celtEnc, err := NewCELTFrameEncoder(celtConfig)
+		if err != nil {
+			return fmt.Errorf("magnum: update CELT frame duration: %w", err)
+		}
+		e.celtEncoder = celtEnc
+		// Also update right channel encoder for stereo
+		if e.celtEncoderR != nil {
+			celtEncR, err := NewCELTFrameEncoder(celtConfig)
+			if err != nil {
+				return fmt.Errorf("magnum: update CELT frame duration (right channel): %w", err)
+			}
+			e.celtEncoderR = celtEncR
+		}
 	}
 
 	// Update SILK encoder if active
 	if e.silkEncoder != nil {
 		frameSize := duration.Samples(e.sampleRate)
 		e.silkEncoder.config.FrameSize = frameSize
+		// Resize frame-dependent buffers
+		e.silkEncoder.residualBuf = make([]float64, frameSize)
+		// Reinitialize excitation encoder with new subframe length
+		subframeLen := frameSize / GainNumSubframes
+		e.silkEncoder.excEncoder = NewExcitationEncoder(subframeLen)
+
+		// Also update right channel encoder for stereo
+		if e.silkEncoderR != nil {
+			e.silkEncoderR.config.FrameSize = frameSize
+			e.silkEncoderR.residualBuf = make([]float64, frameSize)
+			e.silkEncoderR.excEncoder = NewExcitationEncoder(subframeLen)
+		}
 	}
 
 	return nil
@@ -618,11 +652,16 @@ func (e *Encoder) encodeFrameSILK(frame []int16, toc tocHeader) ([]byte, error) 
 		return nil, fmt.Errorf("magnum: encode frame: SILK ch2: %w", err)
 	}
 
-	// Build packet: TOC header + ch1 SILK payload + ch2 SILK payload
-	result := make([]byte, 1+len(ch1Frame.Data)+len(ch2Frame.Data))
+	// Build packet: TOC header + ch1 length (2 bytes) + ch1 SILK payload + ch2 SILK payload
+	// The 2-byte length allows decoder to split variable-length channel payloads correctly
+	ch1Len := len(ch1Frame.Data)
+	result := make([]byte, 1+2+ch1Len+len(ch2Frame.Data))
 	result[0] = byte(toc)
-	copy(result[1:], ch1Frame.Data)
-	copy(result[1+len(ch1Frame.Data):], ch2Frame.Data)
+	// Write ch1 length as big-endian uint16
+	result[1] = byte(ch1Len >> 8)
+	result[2] = byte(ch1Len)
+	copy(result[3:], ch1Frame.Data)
+	copy(result[3+ch1Len:], ch2Frame.Data)
 
 	return result, nil
 }
@@ -689,11 +728,16 @@ func (e *Encoder) encodeFrameCELT(frame []int16, toc tocHeader) ([]byte, error) 
 		return nil, fmt.Errorf("magnum: encode frame: CELT ch2: %w", err)
 	}
 
-	// Build packet: TOC header + ch1 CELT payload + ch2 CELT payload
-	result := make([]byte, 1+len(ch1Frame.Data)+len(ch2Frame.Data))
+	// Build packet: TOC header + ch1 length (2 bytes) + ch1 CELT payload + ch2 CELT payload
+	// The 2-byte length allows decoder to split variable-length channel payloads correctly
+	ch1Len := len(ch1Frame.Data)
+	result := make([]byte, 1+2+ch1Len+len(ch2Frame.Data))
 	result[0] = byte(toc)
-	copy(result[1:], ch1Frame.Data)
-	copy(result[1+len(ch1Frame.Data):], ch2Frame.Data)
+	// Write ch1 length as big-endian uint16
+	result[1] = byte(ch1Len >> 8)
+	result[2] = byte(ch1Len)
+	copy(result[3:], ch1Frame.Data)
+	copy(result[3+ch1Len:], ch2Frame.Data)
 
 	return result, nil
 }
