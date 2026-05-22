@@ -180,7 +180,7 @@ func (enc *SILKFrameEncoder) EncodeFrame(samples []float64) (*SILKEncodedFrame, 
 
 	// Step 7: Excitation coding
 	excFrame := enc.excEncoder.Encode(residual, SILKMaxPulsesHint)
-	enc.encodeExcitation(rc, excFrame)
+	enc.encodeExcitation(rc, excFrame, subframeLen)
 
 	// Step 8: Update state and store LBRR data
 	enc.updateState(quantNLSF, frameGains, pitchLags)
@@ -253,11 +253,23 @@ func computeLPCResidualInto(samples, lpc, residual []float64) {
 }
 
 // encodeExcitation encodes the excitation frame using the range coder.
-func (enc *SILKFrameEncoder) encodeExcitation(rc *RangeEncoder, frame *ExcitationFrame) {
+func (enc *SILKFrameEncoder) encodeExcitation(rc *RangeEncoder, frame *ExcitationFrame, subframeLen int) {
 	if frame == nil {
 		// Encode empty frame
 		rc.EncodeBits(0, 4) // 0 subframes
 		return
+	}
+
+	// Compute position bits needed based on subframe length
+	positionBits := 5 // default
+	if subframeLen > 0 {
+		// ceil(log2(subframeLen))
+		positionBits = 1
+		temp := subframeLen - 1
+		for temp > 0 {
+			positionBits++
+			temp >>= 1
+		}
 	}
 
 	// Count valid subframes
@@ -288,12 +300,13 @@ func (enc *SILKFrameEncoder) encodeExcitation(rc *RangeEncoder, frame *Excitatio
 		// Encode each pulse
 		for j := 0; j < pulseCount && j < len(sf.Pulses); j++ {
 			pulse := sf.Pulses[j]
-			// Position (5 bits, range 0-31)
+			// Position (variable bits based on subframe length)
 			pos := pulse.Position
-			if pos > 31 {
-				pos = 31
+			maxPos := (1 << positionBits) - 1
+			if pos > maxPos {
+				pos = maxPos
 			}
-			rc.EncodeBits(uint32(pos), 5)
+			rc.EncodeBits(uint32(pos), uint32(positionBits))
 
 			// Sign (1 bit)
 			sign := 0
@@ -570,14 +583,20 @@ func (dec *SILKFrameDecoder) DecodeFrame(data []byte) ([]float64, error) {
 	}
 
 	// Step 5: Decode gains
+	gainIndices := make([]int, GainNumSubframes)
+	for i := 0; i < GainNumSubframes; i++ {
+		gainIndices[i] = int(rc.DecodeBits(6))
+	}
+	// Use DecodeGains for proper delta decoding matching encoder's delta coding
+	frameGains := dec.gainDecoder.DecodeGains(gainIndices)
 	gains := make([]float64, GainNumSubframes)
 	for i := 0; i < GainNumSubframes; i++ {
-		gainIdx := int(rc.DecodeBits(6))
-		gains[i] = dec.gainDecoder.DequantizeGain(gainIdx)
+		gains[i] = frameGains.Subframes[i].LinearGain
 	}
 
 	// Step 6: Decode excitation
-	excFrame := dec.decodeExcitation(rc)
+	subframeLen := dec.config.FrameSize / SILKSubFrames
+	excFrame := dec.decodeExcitation(rc, subframeLen)
 
 	// Step 7: Synthesize output using LPC filter
 	samples := dec.synthesize(lpcCoeffs, gains, excFrame, pitchLags, isVoiced)
@@ -606,8 +625,20 @@ func (dec *SILKFrameDecoder) DecodeFrame(data []byte) ([]float64, error) {
 }
 
 // decodeExcitation decodes the excitation signal from the bitstream.
-func (dec *SILKFrameDecoder) decodeExcitation(rc *RangeDecoder) *ExcitationFrame {
+func (dec *SILKFrameDecoder) decodeExcitation(rc *RangeDecoder, subframeLen int) *ExcitationFrame {
 	frame := &ExcitationFrame{}
+
+	// Compute position bits needed based on subframe length
+	positionBits := 5 // default
+	if subframeLen > 0 {
+		// ceil(log2(subframeLen))
+		positionBits = 1
+		temp := subframeLen - 1
+		for temp > 0 {
+			positionBits++
+			temp >>= 1
+		}
+	}
 
 	numSubframes := int(rc.DecodeBits(4))
 	if numSubframes > SILKSubFrames {
@@ -622,7 +653,7 @@ func (dec *SILKFrameDecoder) decodeExcitation(rc *RangeDecoder) *ExcitationFrame
 		sf.Pulses = make([]ExcitationPulse, pulseCount)
 
 		for j := 0; j < pulseCount; j++ {
-			pos := int(rc.DecodeBits(5))
+			pos := int(rc.DecodeBits(uint32(positionBits)))
 			signBit := rc.DecodeLogP(1)
 			sign := 1
 			if signBit == 1 {
