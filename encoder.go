@@ -184,7 +184,7 @@ func (e *Encoder) EnableCELT() error {
 	}
 
 	if e.celtEncoder == nil {
-		frameSize := e.sampleRate * frameDurationMs / 1000 // Samples per channel
+		frameSize := int(float64(e.sampleRate) * float64(e.frameDuration) / 1000.0) // Samples per channel
 		// Note: CELT internally processes mono; for stereo, we use dual mono
 		celtConfig := CELTFrameConfig{
 			SampleRate: e.sampleRate,
@@ -235,7 +235,7 @@ func (e *Encoder) EnableSILK() error {
 	}
 
 	if e.silkEncoder == nil {
-		frameSize := e.sampleRate * frameDurationMs / 1000 // Samples per channel
+		frameSize := int(float64(e.sampleRate) * float64(e.frameDuration) / 1000.0) // Samples per channel
 		// Note: SILK internally processes mono; for stereo, we use dual mono
 		silkConfig := SILKFrameConfig{
 			SampleRate: e.sampleRate,
@@ -378,12 +378,20 @@ func (e *Encoder) SetFrameDuration(duration FrameDuration) error {
 	if e.celtEncoder != nil {
 		frameSize := duration.Samples(e.sampleRate)
 		e.celtEncoder.config.FrameSize = frameSize
+		// Also update right channel encoder for stereo
+		if e.celtEncoderR != nil {
+			e.celtEncoderR.config.FrameSize = frameSize
+		}
 	}
 
 	// Update SILK encoder if active
 	if e.silkEncoder != nil {
 		frameSize := duration.Samples(e.sampleRate)
 		e.silkEncoder.config.FrameSize = frameSize
+		// Also update right channel encoder for stereo
+		if e.silkEncoderR != nil {
+			e.silkEncoderR.config.FrameSize = frameSize
+		}
 	}
 
 	return nil
