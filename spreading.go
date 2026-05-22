@@ -168,8 +168,8 @@ func (ta *TFAnalyzer) Analyze(bandEnergy *BandEnergy) *TFResolution {
 // ApplyTFChange modifies the spectrum based on TF resolution decisions.
 // When TF=1 (transient), the band coefficients are interleaved with
 // time-domain subdivision. When TF=0, coefficients remain in standard order.
-func ApplyTFChange(spectrum []float64, tf *TFResolution, bandStart, bandEnd int, shortBlocks bool) {
-	if !shortBlocks || tf.TF[0] == 0 {
+func ApplyTFChange(spectrum []float64, tf *TFResolution, bandIndex, bandStart, bandEnd int, shortBlocks bool) {
+	if !shortBlocks || bandIndex >= len(tf.TF) || tf.TF[bandIndex] == 0 {
 		// No change needed for long blocks or frequency resolution
 		return
 	}
@@ -195,8 +195,8 @@ func ApplyTFChange(spectrum []float64, tf *TFResolution, bandStart, bandEnd int,
 }
 
 // InvertTFChange reverses the TF change for decoding.
-func InvertTFChange(spectrum []float64, tf *TFResolution, bandStart, bandEnd int, shortBlocks bool) {
-	if !shortBlocks || tf.TF[0] == 0 {
+func InvertTFChange(spectrum []float64, tf *TFResolution, bandIndex, bandStart, bandEnd int, shortBlocks bool) {
+	if !shortBlocks || bandIndex >= len(tf.TF) || tf.TF[bandIndex] == 0 {
 		return
 	}
 

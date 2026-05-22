@@ -106,7 +106,7 @@
 
 - [x] **F-26: Decoder struct not safe for concurrent use** — `decoder.go:99-121` — Concurrency — `Decoder` reuses mutable internal buffers, readers, and PLC/CELT state with no synchronization. Concurrent calls to `Decode` race on shared state. **Remediation**: Document that `Decoder` is not goroutine-safe, or add a mutex. Validate: `go test -race` with concurrent decode test.
 
-- [ ] **F-27: Spreading TF decision ignored for bands >0** — `spreading.go:171-172,198-199` — Logic — `ApplyTFChange`/`InvertTFChange` always read `tf.TF[0]`; bands 1..N use band-0's TF decision instead of their own. **Remediation**: Index `tf.TF[band]` per band. Validate: encode frame with varying TF, verify per-band application.
+- [x] **F-27: Spreading TF decision ignored for bands >0** — `spreading.go:171-172,198-199` — Logic — `ApplyTFChange`/`InvertTFChange` always read `tf.TF[0]`; bands 1..N use band-0's TF decision instead of their own. **Remediation**: Index `tf.TF[band]` per band. Validate: encode frame with varying TF, verify per-band application.
 
 - [x] **F-28: PVQ Encode mutates caller's input spectrum** — `pvq.go:172-188` — Data aliasing — `allocatePulses()` normalizes the input `x` slice in place. Callers who retain a reference to the spectrum see corrupted values after encoding. **Remediation**: Copy `x` before normalization. Validate: encode PVQ, verify original slice unchanged.
 
