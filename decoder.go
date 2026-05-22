@@ -849,7 +849,46 @@ func (d *Decoder) decodeAllocCodec(packet []byte, decodeFn func([]byte) ([]float
 
 // decodeAllocCELT decodes a CELT-encoded packet and allocates the result.
 func (d *Decoder) decodeAllocCELT(packet []byte) ([]int16, error) {
-	return d.decodeAllocCodec(packet, d.celtDecoder.DecodeFrame, "CELT")
+	// Parse TOC to get frame info
+	toc, err := d.validateTOCHeaderMultiFrame(packet)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Calculate expected sample count based on frame code and configuration
+	frameSize := d.sampleRate * 20 / 1000 // 20ms per frame
+	fc := toc.frameCode()
+	
+	var numFrames int
+	switch fc {
+	case frameCodeOneFrame:
+		numFrames = 1
+	case frameCodeTwoEqualFrames, frameCodeTwoDifferentFrames:
+		numFrames = 2
+	case frameCodeArbitraryFrames:
+		// For arbitrary frames, we'll need to allocate conservatively
+		// Maximum is 48 frames per packet (RFC 6716 §3.2)
+		numFrames = 48
+	default:
+		return nil, ErrUnsupportedFrameCode
+	}
+	
+	// Allocate output buffer
+	out := make([]int16, numFrames*frameSize*d.channels)
+	
+	// Use decodeCELT which handles all frame codes
+	n, err := d.decodeCELT(packet, out)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Trim to actual decoded samples
+	out = out[:n]
+	
+	// Update PLC state for packet loss concealment
+	d.updatePLCState(out, len(out))
+	
+	return out, nil
 }
 
 // decodeAllocHybrid decodes a hybrid SILK+CELT encoded packet and allocates the result.

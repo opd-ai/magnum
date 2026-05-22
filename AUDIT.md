@@ -58,7 +58,7 @@
 
 - [x] **F-1: DecodeAlloc never updates PLC state** — `decoder.go:808-827` — Logic — `DecodeAlloc` decodes successfully but never calls `updatePLCState`. Subsequent `DecodePLC` uses stale/empty history and outputs silence instead of concealment. **Remediation**: Call `updatePLCState(out)` before returning from `DecodeAlloc`. Validate: `go test -race -run TestPLC ./...`
 
-- [ ] **F-2: DecodeAlloc rejects multi-frame CELT packets** — `decoder.go:831-848` — Logic — `DecodeAlloc` only handles single-frame code-0 CELT packets; valid code-1/2/3 packets are rejected. **Remediation**: Route multi-frame CELT through `decodeCELTArbitraryFrames` in `DecodeAlloc`. Validate: encode multi-frame CELT, decode with `DecodeAlloc`.
+- [x] **F-2: DecodeAlloc rejects multi-frame CELT packets** — `decoder.go:831-848` — Logic — `DecodeAlloc` only handles single-frame code-0 CELT packets; valid code-1/2/3 packets are rejected. **Remediation**: Route multi-frame CELT through `decodeCELTArbitraryFrames` in `DecodeAlloc`. Validate: encode multi-frame CELT, decode with `DecodeAlloc`.
 
 - [ ] **F-4: Multi-frame CELT stereo decodes as mono-duplicated** — `decoder.go:595-610,613-737` — Logic — Multi-frame CELT decode paths (`decodeCELTArbitraryFrames`) decode each frame as mono and duplicate samples into L/R. Stereo channel separation is lost. **Remediation**: Implement per-channel decode for stereo multi-frame paths. Validate: round-trip stereo multi-frame CELT.
 
