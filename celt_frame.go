@@ -161,11 +161,11 @@ func (enc *CELTFrameEncoder) EncodeFrame(samples []float64) (*CELTEncodedFrame, 
 	// Encode TF and spreading
 	enc.encodeTFAndSpreading(rc, bandEnergy, enc.mdctCoeffs)
 
+	// Encode fine energy (must be before PVQ per RFC 6716 §4.3 decode order)
+	enc.encodeFineEnergy(rc, quantizedEnergy)
+
 	// Encode spectral coefficients with PVQ
 	enc.encodePVQBands(rc, enc.mdctCoeffs, bandEnergy)
-
-	// Encode fine energy
-	enc.encodeFineEnergy(rc, quantizedEnergy)
 
 	// Update state for next frame
 	copy(enc.prevMDCT, enc.mdctCoeffs)

@@ -48,7 +48,7 @@
 
 ### CRITICAL
 
-- [ ] **F-8: CELT encode/decode bit order mismatch** — `celt_frame.go:157-160,370-390` — Logic — Encoder writes PVQ data before fine energy bits; decoder reads fine energy before PVQ. Non-silence CELT frames are parsed with shifted bit positions, producing garbage output. **Remediation**: Align encoder write order to match decoder read order (fine energy first, then PVQ). Validate: `go test -race -run TestCELT ./...`
+- [x] **F-8: CELT encode/decode bit order mismatch** — `celt_frame.go:157-160,370-390` — Logic — Encoder writes PVQ data before fine energy bits; decoder reads fine energy before PVQ. Non-silence CELT frames are parsed with shifted bit positions, producing garbage output. **Remediation**: Align encoder write order to match decoder read order (fine energy first, then PVQ). Validate: `go test -race -run TestCELT ./...`
 
 - [x] **F-10: RangeEncoder.Bytes() mutates state on every call** — `range_coder.go:86-92` — API contract — Each call to `Bytes()` appends 4 flush bytes to the internal buffer. Multiple calls (which happen in `celt_frame.go:223,522` and `silk_frame.go:189`) corrupt the encoded stream and produce invalid packets. **Remediation**: Add a `finalized bool` guard; only flush once. Validate: `go test -race -run TestRangeEncoder ./...`
 
