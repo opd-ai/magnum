@@ -92,7 +92,7 @@
 
 - [ ] **F-20: SetFrameDuration doesn't update stereo right-channel codecs** — `encoder.go:377-386` — Logic — `SetFrameDuration` updates `celtEncoder`/`silkEncoder` config but not `celtEncoderR`/`silkEncoderR`. Stereo channel 2 retains old frame size and produces mismatched packets. **Remediation**: Also update `*EncoderR` instances. Validate: stereo encode after `SetFrameDuration` change.
 
-- [ ] **F-21: encodeFrameLength allows overlength payloads** — `encoder.go:985-997` — Arithmetic — No rejection for lengths >1275 (Opus maximum per RFC 6716 §3.2.1). Large payloads wrap in the 2-byte encoding, producing malformed packets. **Remediation**: Return error or clamp at 1275. Validate: attempt encode of >1275-byte payload, verify error.
+- [x] **F-21: encodeFrameLength allows overlength payloads** — `encoder.go:985-997` — Arithmetic — No rejection for lengths >1275 (Opus maximum per RFC 6716 §3.2.1). Large payloads wrap in the 2-byte encoding, producing malformed packets. **Remediation**: Return error or clamp at 1275. Validate: attempt encode of >1275-byte payload, verify error.
 
 - [ ] **F-22: NLSF LPCToNLSF corrupts coefficients in-place** — `nlsf.go:62-65` — Logic — P/Q polynomial construction reuses already-mutated LPC coefficients, producing incorrect NLSF values. **Remediation**: Copy LPC coefficients before building P/Q polynomials. Validate: round-trip LPC→NLSF→LPC, verify reconstruction error < 1e-6.
 

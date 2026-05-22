@@ -17,6 +17,11 @@ import (
 // 48 kHz × 60 ms × 2 channels × 2 bytes/sample = 11 520 bytes.
 const maxDecompressedBytes = 65536
 
+// maxFrameLength is the maximum length of a single Opus frame in bytes,
+// as specified in RFC 6716 §3.2.1. Frames exceeding this length cannot
+// be encoded using the Opus variable-length frame length encoding.
+const maxFrameLength = 1275
+
 // validateTOCForDecode validates a TOC header for single-frame decoding.
 // Returns the configuration byte or an error if validation fails.
 func validateTOCForDecode(packet []byte, expectedChannels, expectedSampleRate int) (Configuration, error) {
