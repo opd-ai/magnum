@@ -50,7 +50,7 @@
 
 - [ ] **F-8: CELT encode/decode bit order mismatch** — `celt_frame.go:157-160,370-390` — Logic — Encoder writes PVQ data before fine energy bits; decoder reads fine energy before PVQ. Non-silence CELT frames are parsed with shifted bit positions, producing garbage output. **Remediation**: Align encoder write order to match decoder read order (fine energy first, then PVQ). Validate: `go test -race -run TestCELT ./...`
 
-- [ ] **F-10: RangeEncoder.Bytes() mutates state on every call** — `range_coder.go:86-92` — API contract — Each call to `Bytes()` appends 4 flush bytes to the internal buffer. Multiple calls (which happen in `celt_frame.go:223,522` and `silk_frame.go:189`) corrupt the encoded stream and produce invalid packets. **Remediation**: Add a `finalized bool` guard; only flush once. Validate: `go test -race -run TestRangeEncoder ./...`
+- [x] **F-10: RangeEncoder.Bytes() mutates state on every call** — `range_coder.go:86-92` — API contract — Each call to `Bytes()` appends 4 flush bytes to the internal buffer. Multiple calls (which happen in `celt_frame.go:223,522` and `silk_frame.go:189`) corrupt the encoded stream and produce invalid packets. **Remediation**: Add a `finalized bool` guard; only flush once. Validate: `go test -race -run TestRangeEncoder ./...`
 
 - [ ] **F-3: Stereo CELT single-frame decode assumes equal channel sizes** — `decoder.go:527-545` — Logic — Stereo CELT single-frame decode blindly splits the payload in half. Per-channel CELT payloads are variable-length; unequal sizes desynchronize both channel decoders, corrupting output. **Remediation**: Encode an explicit channel-split length prefix or use M/S coding per RFC 6716 §4.3.1. Validate: encode stereo CELT with unequal-energy channels and verify round-trip.
 
