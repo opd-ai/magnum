@@ -261,16 +261,7 @@ func (enc *SILKFrameEncoder) encodeExcitation(rc *RangeEncoder, frame *Excitatio
 	}
 
 	// Compute position bits needed based on subframe length
-	positionBits := 5 // default
-	if subframeLen > 0 {
-		// ceil(log2(subframeLen))
-		positionBits = 1
-		temp := subframeLen - 1
-		for temp > 0 {
-			positionBits++
-			temp >>= 1
-		}
-	}
+	positionBits := int(bitsForValue(subframeLen))
 
 	// Count valid subframes
 	numSubframes := 0
@@ -353,6 +344,7 @@ func (enc *SILKFrameEncoder) Reset() {
 // Returns true if LBRR data was encoded.
 func (enc *SILKFrameEncoder) encodeLBRR(rc *RangeEncoder) bool {
 	if !enc.lbrrEncoder.IsEnabled() {
+		rc.EncodeLogP(0, 1)
 		return false
 	}
 
@@ -635,16 +627,7 @@ func (dec *SILKFrameDecoder) decodeExcitation(rc *RangeDecoder, subframeLen int)
 	frame := &ExcitationFrame{}
 
 	// Compute position bits needed based on subframe length
-	positionBits := 5 // default
-	if subframeLen > 0 {
-		// ceil(log2(subframeLen))
-		positionBits = 1
-		temp := subframeLen - 1
-		for temp > 0 {
-			positionBits++
-			temp >>= 1
-		}
-	}
+	positionBits := int(bitsForValue(subframeLen))
 
 	numSubframes := int(rc.DecodeBits(4))
 	if numSubframes > SILKSubFrames {

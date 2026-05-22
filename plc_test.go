@@ -265,6 +265,63 @@ func TestPLCState_UnvoicedConcealment(t *testing.T) {
 	t.Logf("Unvoiced concealment energy: %.4f", energy/float64(len(concealed)))
 }
 
+func TestPLCState_PacketLostStereoReturnsFullFrame(t *testing.T) {
+	tests := []struct {
+		name      string
+		frameData *PLCFrameData
+	}{
+		{
+			name: "voiced",
+			frameData: &PLCFrameData{
+				Voiced:    true,
+				PitchLag:  80,
+				PitchGain: 0.8,
+				Gain:      0.5,
+				Samples:   make([]float64, 640),
+			},
+		},
+		{
+			name: "unvoiced",
+			frameData: &PLCFrameData{
+				Voiced:    false,
+				Gain:      0.3,
+				LPCCoeffs: []float64{0.9, -0.5, 0.2},
+				Samples:   make([]float64, 640),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plc := NewPLCState(16000, 320, 2)
+			for i := 0; i < len(tt.frameData.Samples)/2; i++ {
+				tt.frameData.Samples[i*2] = 0.5 * math.Sin(2*math.Pi*200*float64(i)/16000)
+				tt.frameData.Samples[i*2+1] = -0.5 * math.Sin(2*math.Pi*300*float64(i)/16000)
+			}
+
+			plc.PacketReceived(tt.frameData)
+			concealed := plc.PacketLost()
+
+			if got := len(concealed); got != 640 {
+				t.Fatalf("concealed length = %d, want 640", got)
+			}
+
+			leftEnergy := 0.0
+			rightEnergy := 0.0
+			for i := 0; i < len(concealed); i += 2 {
+				leftEnergy += concealed[i] * concealed[i]
+				rightEnergy += concealed[i+1] * concealed[i+1]
+			}
+			if leftEnergy == 0 {
+				t.Fatal("left channel concealment should not be silent")
+			}
+			if rightEnergy == 0 {
+				t.Fatal("right channel concealment should not be silent")
+			}
+		})
+	}
+}
+
 // TestApplyTransition tests smooth transition from PLC to decoded.
 func TestApplyTransition(t *testing.T) {
 	plc := NewPLCState(16000, 320, 1)

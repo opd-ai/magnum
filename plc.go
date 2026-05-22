@@ -186,7 +186,7 @@ func (plc *PLCState) computeAttenuation() float64 {
 
 // generateVoicedPLC generates concealment for voiced frames using pitch repetition.
 func (plc *PLCState) generateVoicedPLC(attenuation float64) []float64 {
-	output := make([]float64, plc.frameSize)
+	output := make([]float64, plc.frameSize*plc.channels)
 
 	lastFrame := plc.lastGoodFrame
 	pitchLag := lastFrame.PitchLag
@@ -209,29 +209,36 @@ func (plc *PLCState) generateVoicedPLC(attenuation float64) []float64 {
 	}
 
 	// Pitch-synchronous repetition
-	srcLen := len(srcSamples)
-	for i := 0; i < plc.frameSize; i++ {
-		// Compute source position: wrap around at pitch period
-		srcIdx := i % srcLen
+	srcFrames := len(srcSamples) / plc.channels
+	if srcFrames == 0 {
+		return output
+	}
+	for ch := 0; ch < plc.channels; ch++ {
+		for i := 0; i < plc.frameSize; i++ {
+			srcFrame := i % srcFrames
+			srcIdx := srcFrame*plc.channels + ch
+			outIdx := i*plc.channels + ch
 
-		// Apply pitch-periodic continuation
-		if srcIdx < srcLen-pitchLag && pitchLag < srcLen {
-			// Blend current with pitch-lagged sample
-			blend := 0.7 // Blend factor
-			output[i] = blend*srcSamples[srcIdx] + (1-blend)*srcSamples[srcIdx+pitchLag]
-		} else {
-			output[i] = srcSamples[srcIdx]
+			// Apply pitch-periodic continuation
+			if srcFrame < srcFrames-pitchLag && pitchLag < srcFrames {
+				// Blend current with pitch-lagged sample
+				blend := 0.7 // Blend factor
+				lagIdx := (srcFrame+pitchLag)*plc.channels + ch
+				output[outIdx] = blend*srcSamples[srcIdx] + (1-blend)*srcSamples[lagIdx]
+			} else {
+				output[outIdx] = srcSamples[srcIdx]
+			}
+
+			// Apply gain from last frame
+			output[outIdx] *= lastFrame.Gain
+
+			// Apply attenuation
+			output[outIdx] *= attenuation
 		}
-
-		// Apply gain from last frame
-		output[i] *= lastFrame.Gain
-
-		// Apply attenuation
-		output[i] *= attenuation
 	}
 
 	// Apply slight random jitter to reduce "robotic" artifacts
-	for i := 0; i < plc.frameSize; i++ {
+	for i := range output {
 		jitter := plc.nextRandom() * 0.02 // ±1% jitter
 		output[i] *= (1.0 + jitter)
 	}
@@ -241,27 +248,26 @@ func (plc *PLCState) generateVoicedPLC(attenuation float64) []float64 {
 
 // generateUnvoicedPLC generates concealment for unvoiced frames using shaped noise.
 func (plc *PLCState) generateUnvoicedPLC(attenuation float64) []float64 {
-	output := make([]float64, plc.frameSize)
+	output := make([]float64, plc.frameSize*plc.channels)
 
 	lastFrame := plc.lastGoodFrame
 
-	// Generate white noise
-	noise := make([]float64, plc.frameSize)
-	for i := range noise {
-		noise[i] = plc.nextRandom() * 2.0 // Range [-1, 1]
-	}
-
-	// If we have LPC coefficients, shape the noise
-	if len(lastFrame.LPCCoeffs) > 0 {
-		output = SynthesizeLPC(noise, lastFrame.LPCCoeffs)
-	} else {
-		copy(output, noise)
-	}
-
 	// Apply gain and attenuation
 	gain := lastFrame.Gain * attenuation
-	for i := range output {
-		output[i] *= gain
+	for ch := 0; ch < plc.channels; ch++ {
+		noise := make([]float64, plc.frameSize)
+		for i := range noise {
+			noise[i] = plc.nextRandom() * 2.0 // Range [-1, 1]
+		}
+
+		channelOutput := noise
+		if len(lastFrame.LPCCoeffs) > 0 {
+			channelOutput = SynthesizeLPC(noise, lastFrame.LPCCoeffs)
+		}
+
+		for i := 0; i < plc.frameSize; i++ {
+			output[i*plc.channels+ch] = channelOutput[i] * gain
+		}
 	}
 
 	return output

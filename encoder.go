@@ -377,10 +377,28 @@ func (e *Encoder) SetFrameDuration(duration FrameDuration) error {
 	// Update CELT encoder if active
 	if e.celtEncoder != nil {
 		frameSize := duration.Samples(e.sampleRate)
-		e.celtEncoder.config.FrameSize = frameSize
+		bitratePerChannel := e.bitrate
+		if e.channels == 2 {
+			bitratePerChannel = e.bitrate / 2
+		}
+		celtConfig := CELTFrameConfig{
+			SampleRate: e.sampleRate,
+			Channels:   1,
+			FrameSize:  frameSize,
+			Bitrate:    bitratePerChannel,
+		}
+		celtEnc, err := NewCELTFrameEncoder(celtConfig)
+		if err != nil {
+			return fmt.Errorf("magnum: update CELT frame duration: %w", err)
+		}
+		e.celtEncoder = celtEnc
 		// Also update right channel encoder for stereo
 		if e.celtEncoderR != nil {
-			e.celtEncoderR.config.FrameSize = frameSize
+			celtEncR, err := NewCELTFrameEncoder(celtConfig)
+			if err != nil {
+				return fmt.Errorf("magnum: update CELT frame duration (right channel): %w", err)
+			}
+			e.celtEncoderR = celtEncR
 		}
 	}
 
@@ -393,7 +411,7 @@ func (e *Encoder) SetFrameDuration(duration FrameDuration) error {
 		// Reinitialize excitation encoder with new subframe length
 		subframeLen := frameSize / GainNumSubframes
 		e.silkEncoder.excEncoder = NewExcitationEncoder(subframeLen)
-		
+
 		// Also update right channel encoder for stereo
 		if e.silkEncoderR != nil {
 			e.silkEncoderR.config.FrameSize = frameSize
@@ -1018,6 +1036,7 @@ func (e *Encoder) encodeSilencePayload() []byte {
 //   - Length <= 251: single byte
 //   - Length >= 252: two bytes where length = first_byte + second_byte*4
 //     with first_byte in [252, 255]
+//
 // Returns an error if length exceeds maxFrameLength (1275 bytes).
 func encodeFrameLength(length int) ([]byte, error) {
 	if length < 0 {

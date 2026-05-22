@@ -5,6 +5,7 @@
 package magnum
 
 import (
+	"bytes"
 	"math"
 	"testing"
 )
@@ -284,6 +285,62 @@ func TestSILKFrameEncoder_WithLBRR(t *testing.T) {
 	// Second frame should have LBRR
 	if !frame2.HasLBRR {
 		t.Error("Frame 2 should have LBRR data")
+	}
+}
+
+func TestSILKFrameEncoder_EncodeLBRRDisabledWritesAbsentFlag(t *testing.T) {
+	config := SILKFrameConfig{
+		SampleRate: 16000,
+		Channels:   1,
+		FrameSize:  320,
+		Bitrate:    24000,
+	}
+
+	enc, err := NewSILKFrameEncoder(config)
+	if err != nil {
+		t.Fatalf("NewSILKFrameEncoder error: %v", err)
+	}
+
+	rc := NewRangeEncoder()
+	if enc.encodeLBRR(rc) {
+		t.Fatal("encodeLBRR should report no LBRR data when disabled")
+	}
+	want := NewRangeEncoder()
+	want.EncodeLogP(0, 1)
+	if !bytes.Equal(rc.Bytes(), want.Bytes()) {
+		t.Fatalf("encodeLBRR bytes = %v, want %v", rc.Bytes(), want.Bytes())
+	}
+}
+
+func TestSILKFrameEncoder_EncodeExcitationUsesExactPositionBits(t *testing.T) {
+	rc := NewRangeEncoder()
+	frame := &ExcitationFrame{}
+	frame.Subframes[0] = &ExcitationSubframe{
+		NumPulses: 1,
+		Pulses: []ExcitationPulse{
+			{Position: 31, Sign: 1, Amplitude: 1.0},
+		},
+	}
+
+	var enc SILKFrameEncoder
+	enc.encodeExcitation(rc, frame, 32)
+
+	want := NewRangeEncoder()
+	want.EncodeBits(1, 4)
+	want.EncodeBits(1, 4)
+	want.EncodeBits(31, 5)
+	want.EncodeLogP(0, 1)
+	if !bytes.Equal(rc.Bytes(), want.Bytes()) {
+		t.Fatalf("encodeExcitation bytes = %v, want %v", rc.Bytes(), want.Bytes())
+	}
+
+	dec := NewRangeDecoder(rc.Bytes())
+	decoded := (&SILKFrameDecoder{}).decodeExcitation(dec, 32)
+	if decoded.Subframes[0] == nil || len(decoded.Subframes[0].Pulses) != 1 {
+		t.Fatal("decoded excitation missing expected pulse")
+	}
+	if got := decoded.Subframes[0].Pulses[0].Position; got != 31 {
+		t.Fatalf("decoded pulse position = %d, want 31", got)
 	}
 }
 
