@@ -52,7 +52,7 @@
 
 - [x] **F-10: RangeEncoder.Bytes() mutates state on every call** — `range_coder.go:86-92` — API contract — Each call to `Bytes()` appends 4 flush bytes to the internal buffer. Multiple calls (which happen in `celt_frame.go:223,522` and `silk_frame.go:189`) corrupt the encoded stream and produce invalid packets. **Remediation**: Add a `finalized bool` guard; only flush once. Validate: `go test -race -run TestRangeEncoder ./...`
 
-- [ ] **F-3: Stereo CELT single-frame decode assumes equal channel sizes** — `decoder.go:527-545` — Logic — Stereo CELT single-frame decode blindly splits the payload in half. Per-channel CELT payloads are variable-length; unequal sizes desynchronize both channel decoders, corrupting output. **Remediation**: Encode an explicit channel-split length prefix or use M/S coding per RFC 6716 §4.3.1. Validate: encode stereo CELT with unequal-energy channels and verify round-trip.
+- [x] **F-3: Stereo CELT single-frame decode assumes equal channel sizes** — `decoder.go:527-545` — Logic — Stereo CELT single-frame decode blindly splits the payload in half. Per-channel CELT payloads are variable-length; unequal sizes desynchronize both channel decoders, corrupting output. **Remediation**: Encode an explicit channel-split length prefix or use M/S coding per RFC 6716 §4.3.1. Validate: encode stereo CELT with unequal-energy channels and verify round-trip.
 
 ### HIGH
 
@@ -64,7 +64,7 @@
 
 - [x] **F-5: Pitch estimation always returns nil for valid SILK frames** — `pitch.go:109-113` — Logic — `maxLag*2` at 16 kHz = 576 > 320 (20ms frame); at 8 kHz = 288 > 160. The guard rejects every valid 20ms SILK frame, so pitch estimation is never performed, disabling voiced/LTP paths. **Remediation**: Change threshold to `maxLag + minLag` or use overlapping analysis with buffered history. Validate: `go test -race -run TestPitch ./...`
 
-- [ ] **F-6: Stereo SILK/CELT single-frame packets lack channel delimiter** — `encoder.go:621-625,693-696` — Logic/Framing — Stereo single-frame packets concatenate two variable-length channel payloads with no length prefix. The decoder cannot determine where channel 1 ends and channel 2 begins except by assuming equal lengths (which is wrong for CELT). **Remediation**: Prepend a 2-byte length for channel 1 payload, or use joint stereo coding. Validate: encode stereo with asymmetric content, verify decode.
+- [x] **F-6: Stereo SILK/CELT single-frame packets lack channel delimiter** — `encoder.go:621-625,693-696` — Logic/Framing — Stereo single-frame packets concatenate two variable-length channel payloads with no length prefix. The decoder cannot determine where channel 1 ends and channel 2 begins except by assuming equal lengths (which is wrong for CELT). **Remediation**: Prepend a 2-byte length for channel 1 payload, or use joint stereo coding. Validate: encode stereo with asymmetric content, verify decode.
 
 - [ ] **F-7: Multi-frame stereo encodes collapse to mono** — `encoder.go:748-752,823-833,903-949` — Logic/Data loss — `EncodeTwoFrames`/`EncodeMultipleFrames` route stereo through `encodeSILKPayload`/`encodeCELTPayload`, which average L+R to mono. Anti-phase stereo content collapses to silence. **Remediation**: Encode channels independently or use joint stereo. Validate: encode anti-phase stereo, verify non-silence output.
 

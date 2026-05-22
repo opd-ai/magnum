@@ -534,15 +534,20 @@ func (d *Decoder) decodeCELT(packet []byte, out []int16) (int, error) {
 
 // decodeCELTStereoSingleFrame decodes a stereo CELT single-frame packet.
 // Stereo CELT packets contain two concatenated mono frames (left/right or mid/side).
-// The payload is split in half, each half decoded separately, then interleaved.
+// The payload starts with a 2-byte big-endian length prefix for ch1, then ch1 data, then ch2 data.
 func (d *Decoder) decodeCELTStereoSingleFrame(payload []byte, out []int16) (int, error) {
-	if len(payload)%2 != 0 {
+	if len(payload) < 3 {
 		return 0, ErrInvalidFrameData
 	}
 
-	frameLen := len(payload) / 2
-	ch1Data := payload[:frameLen]
-	ch2Data := payload[frameLen:]
+	// Read ch1 length prefix (big-endian uint16)
+	ch1Len := int(payload[0])<<8 | int(payload[1])
+	if ch1Len < 0 || 2+ch1Len > len(payload) {
+		return 0, ErrInvalidFrameData
+	}
+
+	ch1Data := payload[2 : 2+ch1Len]
+	ch2Data := payload[2+ch1Len:]
 
 	// Decode first channel (left or mid)
 	ch1Samples, err := d.celtDecoder.DecodeFrame(ch1Data)

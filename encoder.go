@@ -618,11 +618,16 @@ func (e *Encoder) encodeFrameSILK(frame []int16, toc tocHeader) ([]byte, error) 
 		return nil, fmt.Errorf("magnum: encode frame: SILK ch2: %w", err)
 	}
 
-	// Build packet: TOC header + ch1 SILK payload + ch2 SILK payload
-	result := make([]byte, 1+len(ch1Frame.Data)+len(ch2Frame.Data))
+	// Build packet: TOC header + ch1 length (2 bytes) + ch1 SILK payload + ch2 SILK payload
+	// The 2-byte length allows decoder to split variable-length channel payloads correctly
+	ch1Len := len(ch1Frame.Data)
+	result := make([]byte, 1+2+ch1Len+len(ch2Frame.Data))
 	result[0] = byte(toc)
-	copy(result[1:], ch1Frame.Data)
-	copy(result[1+len(ch1Frame.Data):], ch2Frame.Data)
+	// Write ch1 length as big-endian uint16
+	result[1] = byte(ch1Len >> 8)
+	result[2] = byte(ch1Len)
+	copy(result[3:], ch1Frame.Data)
+	copy(result[3+ch1Len:], ch2Frame.Data)
 
 	return result, nil
 }
@@ -689,11 +694,16 @@ func (e *Encoder) encodeFrameCELT(frame []int16, toc tocHeader) ([]byte, error) 
 		return nil, fmt.Errorf("magnum: encode frame: CELT ch2: %w", err)
 	}
 
-	// Build packet: TOC header + ch1 CELT payload + ch2 CELT payload
-	result := make([]byte, 1+len(ch1Frame.Data)+len(ch2Frame.Data))
+	// Build packet: TOC header + ch1 length (2 bytes) + ch1 CELT payload + ch2 CELT payload
+	// The 2-byte length allows decoder to split variable-length channel payloads correctly
+	ch1Len := len(ch1Frame.Data)
+	result := make([]byte, 1+2+ch1Len+len(ch2Frame.Data))
 	result[0] = byte(toc)
-	copy(result[1:], ch1Frame.Data)
-	copy(result[1+len(ch1Frame.Data):], ch2Frame.Data)
+	// Write ch1 length as big-endian uint16
+	result[1] = byte(ch1Len >> 8)
+	result[2] = byte(ch1Len)
+	copy(result[3:], ch1Frame.Data)
+	copy(result[3+ch1Len:], ch2Frame.Data)
 
 	return result, nil
 }
