@@ -110,7 +110,7 @@
 
 - [x] **F-28: PVQ Encode mutates caller's input spectrum** — `pvq.go:172-188` — Data aliasing — `allocatePulses()` normalizes the input `x` slice in place. Callers who retain a reference to the spectrum see corrupted values after encoding. **Remediation**: Copy `x` before normalization. Validate: encode PVQ, verify original slice unchanged.
 
-- [ ] **F-29: Code-3 flate decode ignores padding flag** — `decoder.go:1010-1023` — Logic — Arbitrary-frame flate path reads the M byte but ignores padding flag/length bytes per RFC 6716 §3.2.5. Padded code-3 packets are misparsed. **Remediation**: Parse and skip padding bytes before frame data. Validate: encode padded code-3 packet, decode successfully.
+- [x] **F-29: Code-3 flate decode ignores padding flag** — `decoder.go:1010-1023` — Logic — Arbitrary-frame flate path reads the M byte but ignores padding flag/length bytes per RFC 6716 §3.2.5. Padded code-3 packets are misparsed. **Remediation**: Parse and skip padding bytes before frame data. Validate: encode padded code-3 packet, decode successfully.
 
 - [x] **F-30: Hybrid Reset() doesn't reset CELT sub-state** — `hybrid.go:235-243,431-440` — API contract — `Reset()` clears SILK state but not CELT encoder/decoder overlap/history. Post-reset frames may contain stale CELT state. **Remediation**: Also reset CELT encoder/decoder state in hybrid `Reset()`. Validate: encode, reset, encode silence, verify no residual audio.
 

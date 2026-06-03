@@ -1089,15 +1089,40 @@ func decodeArbitraryFrames(packet, buf, chunk []byte, flateR io.ReadCloser, ster
 	// v (VBR flag) is bit 7, p (padding flag) is bit 6, M (frame count) is bits 0-5
 	frameCount := int(mByte & 0x3F)
 	isVBR := (mByte & 0x80) != 0
+	hasPadding := (mByte & 0x40) != 0
 
 	if frameCount == 0 || frameCount > 48 {
 		return nil, false, 0, ErrInvalidFrameData
 	}
 
-	if !isVBR {
-		return decodeCBRFrames(packet[2:], frameCount, buf, chunk, flateR, stereo, config)
+	offset := 2
+	
+	// Handle padding length bytes if present (RFC 6716 §3.2.1)
+	paddingLen := 0
+	if hasPadding {
+		for offset < len(packet) {
+			b := packet[offset]
+			offset++
+			paddingLen += int(b)
+			if b != 255 {
+				break
+			}
+		}
 	}
-	return decodeVBRFrames(packet, frameCount, buf, chunk, flateR, stereo, config)
+
+	// Calculate actual frame data end (excluding padding bytes at the end)
+	frameDataEnd := len(packet) - paddingLen
+	if frameDataEnd <= offset {
+		return nil, false, 0, ErrInvalidFrameData
+	}
+	
+	// Extract frame payload (excluding padding)
+	framePayload := packet[offset:frameDataEnd]
+
+	if !isVBR {
+		return decodeCBRFrames(framePayload, frameCount, buf, chunk, flateR, stereo, config)
+	}
+	return decodeVBRFrames(framePayload, frameCount, buf, chunk, flateR, stereo, config)
 }
 
 // decodeCBRFrames decodes CBR multi-frame packets (all frames same size).
@@ -1114,25 +1139,25 @@ func decodeCBRFrames(payload []byte, frameCount int, buf, chunk []byte, flateR i
 }
 
 // decodeVBRFrames decodes VBR multi-frame packets (variable frame sizes).
-func decodeVBRFrames(packet []byte, frameCount int, buf, chunk []byte, flateR io.ReadCloser, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
-	offset := 2
+func decodeVBRFrames(payload []byte, frameCount int, buf, chunk []byte, flateR io.ReadCloser, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
+	offset := 0
 	frames := make([][]byte, frameCount)
 	for i := 0; i < frameCount-1; i++ {
-		if offset >= len(packet) {
+		if offset >= len(payload) {
 			return nil, false, 0, ErrInvalidFrameData
 		}
-		frameLen, consumed := decodeFrameLength(packet[offset:])
+		frameLen, consumed := decodeFrameLength(payload[offset:])
 		if consumed == 0 {
 			return nil, false, 0, ErrInvalidFrameData
 		}
 		offset += consumed
-		if offset+frameLen > len(packet) {
+		if offset+frameLen > len(payload) {
 			return nil, false, 0, ErrInvalidFrameData
 		}
-		frames[i] = packet[offset : offset+frameLen]
+		frames[i] = payload[offset : offset+frameLen]
 		offset += frameLen
 	}
-	frames[frameCount-1] = packet[offset:]
+	frames[frameCount-1] = payload[offset:]
 	return decodeMultipleFrames(frames, buf, chunk, flateR, stereo, config)
 }
 
