@@ -114,7 +114,7 @@
 
 - [x] **F-30: Hybrid Reset() doesn't reset CELT sub-state** — `hybrid.go:235-243,431-440` — API contract — `Reset()` clears SILK state but not CELT encoder/decoder overlap/history. Post-reset frames may contain stale CELT state. **Remediation**: Also reset CELT encoder/decoder state in hybrid `Reset()`. Validate: encode, reset, encode silence, verify no residual audio.
 
-- [ ] **F-31: SILK encoder Reset() incomplete** — `silk_frame.go:324-337` — API contract — `Reset()` does not reset `gainCoder`, `pitchEstimate`, `ltpAnalyzer`, or `excEncoder`. Post-reset encoding depends on previous stream's state. **Remediation**: Reset all sub-components. Validate: encode, reset, encode new content, verify no cross-stream artifacts.
+- [x] **F-31: SILK encoder Reset() incomplete** — `silk_frame.go:324-337` — API contract — `Reset()` does not reset `gainCoder`, `pitchEstimate`, `ltpAnalyzer`, or `excEncoder`. Post-reset encoding depends on previous stream's state. **Remediation**: Reset all sub-components. Validate: encode, reset, encode new content, verify no cross-stream artifacts.
 
 - [ ] **F-32: CELT stereo accepted but operates mono-only** — `celt_frame.go:63-65,127-129,455-461` — API contract — `NewCELTEncoder`/`NewCELTDecoder` accept `Channels==2` but all encode/decode operations process `FrameSize` (mono length) samples only. **Remediation**: Either reject channels>1 or implement per-channel processing. Validate: stereo CELT encode/decode produces correct sample count.
 
