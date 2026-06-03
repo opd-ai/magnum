@@ -460,6 +460,16 @@ func TestNewSILKFrameDecoder(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "stereo not supported",
+			config: SILKFrameConfig{
+				SampleRate: 16000,
+				Channels:   2,
+				FrameSize:  320,
+				Bitrate:    32000,
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

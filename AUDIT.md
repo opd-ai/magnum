@@ -86,7 +86,7 @@
 
 - [x] **F-17: Stereo PLC returns half-length output** — `plc.go:106,148,189,244` — API contract — PLC state is allocated as mono (`prevSamples: frameSize`) regardless of channel count. Voiced/unvoiced concealment returns `frameSize` samples instead of `frameSize*channels`. **Remediation**: Multiply allocation and output length by `channels`. Validate: create stereo decoder, trigger PLC, verify output length.
 
-- [x] **F-18: Hybrid mode broken for stereo** — `hybrid.go:69-71,74,135,384` — API contract — Stereo is accepted at construction but frame sizing, band-split, and combine operations are all mono-only. Encoder expects 480 samples instead of 960; decoder returns mono length. **Remediation**: Scale all frame sizes by channel count in hybrid mode. Validate: encode/decode 24 kHz stereo hybrid, verify output length.
+- [x] **F-18: Hybrid mode broken for stereo** — `hybrid.go:69-71,74,135,384` — API contract — Stereo is accepted at construction but frame sizing, band-split, and combine operations are all mono-only. Encoder expects 480 samples instead of 960; decoder returns mono length. **Remediation**: Reject stereo (`channels>1`) in CELT/SILK component constructors used by hybrid mode until stereo support is implemented. Validate: hybrid encoder/decoder construction with stereo returns error.
 
 - [x] **F-19: EnableCELT/EnableSILK ignore SetFrameDuration** — `encoder.go:187-193,238-244` — Logic — These methods hardcode 20ms frame duration instead of using `e.frameDuration`. If `SetFrameDuration` was called first, the codec backend has the wrong frame size. **Remediation**: Use `e.frameDuration` (or `e.frameDurationMs`) when constructing codec instances. Validate: `SetFrameDuration(40); EnableSILK(); Encode(...)` should not panic.
 
@@ -98,7 +98,7 @@
 
 - [x] **F-23: BandEnd panics for band==NumCELTBands** — `band_energy.go:135-139` — Boundary safety — Guard `band > NumCELTBands` allows `band == 21`; accessing `celtBands[22]` on a 22-element array causes index-out-of-range panic. **Remediation**: Change guard to `band >= NumCELTBands`. Validate: `BandEnd(21)` should return -1.
 
-- [x] **F-24: CELT decoder returns half-length output** — `celt_frame.go:455-461` — API contract — `DecodeFrame` returns `FrameSize/2` samples instead of `FrameSize`. A 20ms 48 kHz frame (960 samples) decodes to only 480 samples. **Remediation**: Return full `FrameSize` samples from MDCT synthesis. Validate: decode CELT frame, verify `len(output) == frameSize`.
+- [ ] **F-24: CELT decoder returns half-length output** — `celt_frame.go:455-461` — API contract — `DecodeFrame` returns `FrameSize/2` samples instead of `FrameSize`. A 20ms 48 kHz frame (960 samples) decodes to only 480 samples. **Remediation**: Return full `FrameSize` samples from MDCT synthesis. Validate: decode CELT frame, verify `len(output) == frameSize`.
 
 - [x] **F-25: SetFrameDuration panics with active SILK on 40/60ms** — `encoder.go:377-386` — Logic/Boundary — `SetFrameDuration` mutates `config.FrameSize` but doesn't rebuild SILK internals. SILK subframe logic may access out-of-bounds on non-20ms frames. **Remediation**: Rebuild SILK encoder state when frame duration changes. Validate: `EnableSILK(); SetFrameDuration(40); Encode(...)`.
 
