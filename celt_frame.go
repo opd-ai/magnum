@@ -19,6 +19,7 @@
 package magnum
 
 import (
+	"fmt"
 	"math"
 )
 
@@ -60,8 +61,8 @@ func NewCELTFrameEncoder(config CELTFrameConfig) (*CELTFrameEncoder, error) {
 	if config.SampleRate != 24000 && config.SampleRate != 48000 {
 		return nil, ErrInvalidSampleRate
 	}
-	if config.Channels < 1 || config.Channels > 2 {
-		return nil, ErrInvalidChannels
+	if config.Channels != 1 {
+		return nil, fmt.Errorf("magnum: CELT only supports mono (channels=1), got %d", config.Channels)
 	}
 
 	// Determine MDCT size (same as frame size for CELT)
@@ -312,8 +313,8 @@ func NewCELTFrameDecoder(config CELTFrameConfig) (*CELTFrameDecoder, error) {
 	if config.SampleRate != 24000 && config.SampleRate != 48000 {
 		return nil, ErrInvalidSampleRate
 	}
-	if config.Channels < 1 || config.Channels > 2 {
-		return nil, ErrInvalidChannels
+	if config.Channels != 1 {
+		return nil, fmt.Errorf("magnum: CELT only supports mono (channels=1), got %d", config.Channels)
 	}
 
 	// Determine MDCT size (same as frame size for CELT)

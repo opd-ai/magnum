@@ -86,8 +86,8 @@ func NewSILKFrameEncoder(config SILKFrameConfig) (*SILKFrameEncoder, error) {
 	if config.SampleRate != 8000 && config.SampleRate != 16000 {
 		return nil, fmt.Errorf("SILK: invalid sample rate %d, must be 8000 or 16000", config.SampleRate)
 	}
-	if config.Channels < 1 || config.Channels > 2 {
-		return nil, ErrInvalidChannels
+	if config.Channels != 1 {
+		return nil, fmt.Errorf("magnum: SILK only supports mono (channels=1), got %d", config.Channels)
 	}
 
 	// Determine LPC order based on bandwidth
@@ -496,8 +496,8 @@ func NewSILKFrameDecoder(config SILKFrameConfig) (*SILKFrameDecoder, error) {
 	if config.SampleRate != 8000 && config.SampleRate != 16000 {
 		return nil, fmt.Errorf("SILK: invalid sample rate %d, must be 8000 or 16000", config.SampleRate)
 	}
-	if config.Channels < 1 || config.Channels > 2 {
-		return nil, ErrInvalidChannels
+	if config.Channels != 1 {
+		return nil, fmt.Errorf("magnum: SILK only supports mono (channels=1), got %d", config.Channels)
 	}
 
 	// Determine LPC order based on bandwidth

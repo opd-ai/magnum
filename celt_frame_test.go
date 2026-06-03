@@ -22,14 +22,14 @@ func TestCELTFrameEncoderCreation(t *testing.T) {
 			expectErr: false,
 		},
 		{
-			name: "valid 24kHz config",
+			name: "stereo not supported",
 			config: CELTFrameConfig{
 				SampleRate: 24000,
 				Channels:   2,
 				FrameSize:  480,
 				Bitrate:    32000,
 			},
-			expectErr: false,
+			expectErr: true,
 		},
 		{
 			name: "invalid sample rate",

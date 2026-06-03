@@ -38,14 +38,14 @@ func TestNewSILKFrameEncoder(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "16kHz stereo",
+			name: "stereo not supported",
 			config: SILKFrameConfig{
 				SampleRate: 16000,
 				Channels:   2,
 				FrameSize:  320,
 				Bitrate:    32000,
 			},
-			wantErr: false,
+			wantErr: true,
 		},
 		{
 			name: "invalid sample rate",
