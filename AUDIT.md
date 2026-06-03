@@ -86,7 +86,7 @@
 
 - [x] **F-17: Stereo PLC returns half-length output** — `plc.go:106,148,189,244` — API contract — PLC state is allocated as mono (`prevSamples: frameSize`) regardless of channel count. Voiced/unvoiced concealment returns `frameSize` samples instead of `frameSize*channels`. **Remediation**: Multiply allocation and output length by `channels`. Validate: create stereo decoder, trigger PLC, verify output length.
 
-- [ ] **F-18: Hybrid mode broken for stereo** — `hybrid.go:69-71,74,135,384` — API contract — Stereo is accepted at construction but frame sizing, band-split, and combine operations are all mono-only. Encoder expects 480 samples instead of 960; decoder returns mono length. **Remediation**: Scale all frame sizes by channel count in hybrid mode. Validate: encode/decode 24 kHz stereo hybrid, verify output length.
+- [x] **F-18: Hybrid mode broken for stereo** — `hybrid.go:69-71,74,135,384` — API contract — Stereo is accepted at construction but frame sizing, band-split, and combine operations are all mono-only. Encoder expects 480 samples instead of 960; decoder returns mono length. **Remediation**: Scale all frame sizes by channel count in hybrid mode. Validate: encode/decode 24 kHz stereo hybrid, verify output length.
 
 - [x] **F-19: EnableCELT/EnableSILK ignore SetFrameDuration** — `encoder.go:187-193,238-244` — Logic — These methods hardcode 20ms frame duration instead of using `e.frameDuration`. If `SetFrameDuration` was called first, the codec backend has the wrong frame size. **Remediation**: Use `e.frameDuration` (or `e.frameDurationMs`) when constructing codec instances. Validate: `SetFrameDuration(40); EnableSILK(); Encode(...)` should not panic.
 
