@@ -689,8 +689,16 @@ func (dec *SILKFrameDecoder) synthesize(lpc, gains []float64, exc *ExcitationFra
 			if lag > 0 {
 				for i := 0; i < subframeLen; i++ {
 					srcIdx := startIdx + i - lag
-					if srcIdx >= 0 && srcIdx < len(dec.prevSamples) {
-						excSamples[i] += 0.5 * dec.prevSamples[srcIdx]
+					// For intra-frame LTP, samples within current frame can be referenced
+					if srcIdx >= 0 && srcIdx < startIdx {
+						// Use previously decoded samples from current frame
+						excSamples[i] += 0.5 * samples[srcIdx]
+					} else if srcIdx < 0 && srcIdx+len(dec.prevSamples) >= 0 {
+						// Use samples from history buffer
+						historyIdx := srcIdx + len(dec.prevSamples)
+						if historyIdx >= 0 && historyIdx < len(dec.prevSamples) {
+							excSamples[i] += 0.5 * dec.prevSamples[historyIdx]
+						}
 					}
 				}
 			}

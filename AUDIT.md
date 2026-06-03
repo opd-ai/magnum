@@ -80,7 +80,7 @@
 
 - [x] **F-14: Excitation position truncated to 5 bits** — `silk_frame.go:289-296,611` — Logic — Excitation pulse positions are forced into 5 bits (0..31), but 20ms SILK subframes are 40 samples (8 kHz) or 80 samples (16 kHz). Pulses at positions >31 are silently moved to wrong locations. **Remediation**: Use ceil(log2(subframeLength)) bits for positions. Validate: encode frame with energy in latter half, verify reconstruction.
 
-- [ ] **F-15: SILK voiced synthesis uses stale LTP history** — `silk_frame.go:649-656` — Logic — Voiced synthesis always reads LTP history from `dec.prevSamples` even when lagged samples are within the current frame. First subframe of a newly-voiced frame uses incorrect history. **Remediation**: Extend history buffer to include current-frame samples for intra-frame LTP. Validate: encode voiced transition, verify smooth reconstruction.
+- [x] **F-15: SILK voiced synthesis uses stale LTP history** — `silk_frame.go:649-656` — Logic — Voiced synthesis always reads LTP history from `dec.prevSamples` even when lagged samples are within the current frame. First subframe of a newly-voiced frame uses incorrect history. **Remediation**: Extend history buffer to include current-frame samples for intra-frame LTP. Validate: encode voiced transition, verify smooth reconstruction.
 
 - [x] **F-16: SILK decoder never updates PLC state** — `silk_frame.go:585-590,680-682` — Logic — Successful SILK decodes never update `dec.plc`; calling `DecodeFrame(nil)` for PLC has no history and returns silence. **Remediation**: Update PLC state from decoded output at end of `DecodeFrame`. Validate: decode SILK frame, then decode nil, verify concealment output.
 
