@@ -1140,8 +1140,12 @@ func decodeCBRFrames(payload []byte, frameCount int, buf, chunk []byte, flateR i
 
 // decodeVBRFrames decodes VBR multi-frame packets (variable frame sizes).
 func decodeVBRFrames(payload []byte, frameCount int, buf, chunk []byte, flateR io.ReadCloser, stereo bool, config Configuration) ([]byte, bool, Configuration, error) {
+	// RFC 6716 §3.2.5: All M-1 lengths first, then all M frame payloads
 	offset := 0
 	frames := make([][]byte, frameCount)
+	
+	// First pass: read all M-1 frame lengths
+	frameLengths := make([]int, frameCount-1)
 	for i := 0; i < frameCount-1; i++ {
 		if offset >= len(payload) {
 			return nil, false, 0, ErrInvalidFrameData
@@ -1151,13 +1155,25 @@ func decodeVBRFrames(payload []byte, frameCount int, buf, chunk []byte, flateR i
 			return nil, false, 0, ErrInvalidFrameData
 		}
 		offset += consumed
-		if offset+frameLen > len(payload) {
-			return nil, false, 0, ErrInvalidFrameData
-		}
-		frames[i] = payload[offset : offset+frameLen]
-		offset += frameLen
+		frameLengths[i] = frameLen
+	}
+	
+	// Verify frame data fits within remaining payload
+	totalFrameLen := 0
+	for _, len := range frameLengths {
+		totalFrameLen += len
+	}
+	if offset+totalFrameLen > len(payload) {
+		return nil, false, 0, ErrInvalidFrameData
+	}
+	
+	// Second pass: extract all M frames
+	for i := 0; i < frameCount-1; i++ {
+		frames[i] = payload[offset : offset+frameLengths[i]]
+		offset += frameLengths[i]
 	}
 	frames[frameCount-1] = payload[offset:]
+	
 	return decodeMultipleFrames(frames, buf, chunk, flateR, stereo, config)
 }
 
