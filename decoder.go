@@ -1160,8 +1160,8 @@ func decodeVBRFrames(payload []byte, frameCount int, buf, chunk []byte, flateR i
 	
 	// Verify frame data fits within remaining payload
 	totalFrameLen := 0
-	for _, len := range frameLengths {
-		totalFrameLen += len
+	for _, fl := range frameLengths {
+		totalFrameLen += fl
 	}
 	if offset+totalFrameLen > len(payload) {
 		return nil, false, 0, ErrInvalidFrameData

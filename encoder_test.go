@@ -2088,6 +2088,93 @@ func TestEncodeMultipleFramesVaryingSizes(t *testing.T) {
 	}
 }
 
+// TestEncodeMultipleFramesLengthTablePrecedesPayloads verifies that for a VBR
+// code-3 packet with 3+ frames all M-1 frame-length entries appear in the
+// packet bytes before any frame payload (RFC 6716 §3.2.5).
+func TestEncodeMultipleFramesLengthTablePrecedesPayloads(t *testing.T) {
+	t.Parallel()
+
+	enc, err := NewEncoder(48000, 1)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+	if err := enc.SetFrameDuration(FrameDuration5ms); err != nil {
+		t.Fatalf("SetFrameDuration: %v", err)
+	}
+	frameSize := FrameDuration5ms.Samples(48000)
+
+	// Three frames with deliberately different content so they compress to
+	// different sizes, exercising the VBR length-table path.
+	frames := make([][]int16, 3)
+	frames[0] = make([]int16, frameSize)
+	for i := range frames[0] {
+		theta := 2.0 * 3.14159265 * 440.0 * float64(i) / 48000.0
+		frames[0][i] = int16(16000.0 * sinTable(theta))
+	}
+	frames[1] = make([]int16, frameSize) // silence
+	frames[2] = make([]int16, frameSize)
+	for i := range frames[2] {
+		frames[2][i] = int16(i * 100)
+	}
+
+	packet, err := enc.EncodeMultipleFrames(frames)
+	if err != nil {
+		t.Fatalf("EncodeMultipleFrames: %v", err)
+	}
+	if len(packet) < 2 {
+		t.Fatalf("packet too short: %d bytes", len(packet))
+	}
+
+	mByte := packet[1]
+	frameCount := int(mByte & 0x3F)
+	if frameCount != 3 {
+		t.Fatalf("M byte frame count: got %d, want 3", frameCount)
+	}
+	if mByte&0x80 == 0 {
+		t.Fatal("VBR flag not set in M byte")
+	}
+
+	// Read all M-1 frame lengths starting at offset 2.
+	offset := 2
+	frameLens := make([]int, frameCount-1)
+	for i := 0; i < frameCount-1; i++ {
+		if offset >= len(packet) {
+			t.Fatalf("ran out of bytes reading length entry %d", i)
+		}
+		fl, consumed := decodeFrameLength(packet[offset:])
+		if consumed == 0 {
+			t.Fatalf("could not decode frame length %d at offset %d", i, offset)
+		}
+		frameLens[i] = fl
+		offset += consumed
+	}
+
+	// After the length table, the remaining bytes must be >= sum of all
+	// M-1 explicit frame lengths; the last frame takes whatever is left.
+	remaining := len(packet) - offset
+	sumExplicit := 0
+	for _, fl := range frameLens {
+		sumExplicit += fl
+	}
+	if remaining < sumExplicit {
+		t.Errorf("remaining bytes after length table (%d) < sum of explicit lengths (%d): "+
+			"length table not fully written before frame payloads", remaining, sumExplicit)
+	}
+
+	// Walk the M-1 explicitly-sized frames to confirm none overflow the packet.
+	payloadOffset := offset
+	for i, fl := range frameLens {
+		if payloadOffset+fl > len(packet) {
+			t.Errorf("frame %d (len %d) overflows packet at offset %d", i, fl, payloadOffset)
+		}
+		payloadOffset += fl
+	}
+	// Last frame must not overflow.
+	if payloadOffset > len(packet) {
+		t.Errorf("last frame overflows: payloadOffset %d > packetLen %d", payloadOffset, len(packet))
+	}
+}
+
 // TestDecodeFrameCode3Invalid verifies that malformed frame code 3 packets
 // are rejected.
 func TestDecodeFrameCode3Invalid(t *testing.T) {
