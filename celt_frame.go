@@ -159,7 +159,7 @@ func (enc *CELTFrameEncoder) EncodeFrame(samples []float64) (*CELTEncodedFrame, 
 	quantizedEnergy := enc.encodeCoarseEnergy(rc, bandEnergy, isIntra)
 
 	// Encode TF and spreading
-	enc.encodeTFAndSpreading(rc, bandEnergy, enc.mdctCoeffs)
+	enc.encodeTFAndSpreading(rc, bandEnergy, enc.mdctCoeffs, isTransient)
 
 	// Encode fine energy (must be before PVQ per RFC 6716 §4.3 decode order)
 	enc.encodeFineEnergy(rc, quantizedEnergy)
@@ -214,9 +214,9 @@ func (enc *CELTFrameEncoder) encodeCoarseEnergy(rc *RangeEncoder, bandEnergy *Ba
 }
 
 // encodeTFAndSpreading encodes TF select and spreading mode.
-func (enc *CELTFrameEncoder) encodeTFAndSpreading(rc *RangeEncoder, bandEnergy *BandEnergy, mdctCoeffs []float64) {
+func (enc *CELTFrameEncoder) encodeTFAndSpreading(rc *RangeEncoder, bandEnergy *BandEnergy, mdctCoeffs []float64, isTransient bool) {
 	tfRes := enc.tf.Analyze(bandEnergy)
-	EncodeTFSelect(rc, tfRes, false)
+	EncodeTFSelect(rc, tfRes, isTransient)
 
 	spreadMode := enc.spread.Analyze(mdctCoeffs, NumCELTBands)
 	EncodeSpread(rc, spreadMode)

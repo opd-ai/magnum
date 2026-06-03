@@ -338,6 +338,10 @@ func (enc *SILKFrameEncoder) Reset() {
 	}
 	enc.vad.Reset()
 	enc.lbrrEncoder.Reset()
+	enc.gainCoder.Reset()
+	enc.pitchEstimate.Reset()
+	enc.ltpAnalyzer.Reset()
+	enc.excEncoder.Reset()
 }
 
 // encodeLBRR encodes LBRR (Low Bit-Rate Redundancy) data if enabled.

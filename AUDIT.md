@@ -68,7 +68,7 @@
 
 - [ ] **F-7: Multi-frame stereo encodes collapse to mono** — `encoder.go:748-752,823-833,903-949` — Logic/Data loss — `EncodeTwoFrames`/`EncodeMultipleFrames` route stereo through `encodeSILKPayload`/`encodeCELTPayload`, which average L+R to mono. Anti-phase stereo content collapses to silence. **Remediation**: Encode channels independently or use joint stereo. Validate: encode anti-phase stereo, verify non-silence output.
 
-- [ ] **F-8b: Code-3 VBR CELT multi-frame layout incorrect** — `encoder.go:841-873` — Logic — Code-3 CELT packets interleave `[len][frame][len][frame]...` but RFC 6716 §3.2.5 specifies all M-1 lengths first, then all frame data contiguously. Decode silently misparses with >2 varying-size frames. **Remediation**: Write all lengths first, then all frame payloads. Validate: encode 3+ VBR CELT frames, decode with `opusdec`.
+- [x] **F-8b: Code-3 VBR CELT multi-frame layout incorrect** — `encoder.go:841-873` — Logic — Code-3 CELT packets interleave `[len][frame][len][frame]...` but RFC 6716 §3.2.5 specifies all M-1 lengths first, then all frame data contiguously. Decode silently misparses with >2 varying-size frames. **Remediation**: Write all lengths first, then all frame payloads. Validate: encode 3+ VBR CELT frames, decode with `opusdec`.
 
 - [ ] **F-9: PVQ index/K truncation for large bands** — `celt_frame.go:260-272,417-428` — Logic/Overflow — `k` is encoded in 5 bits (max 31) but `SelectK()` returns up to 128; PVQ indices are stored as `uint32` but can exceed 32 bits for large K values. Large-band PVQ codewords cannot round-trip. **Remediation**: Use variable-length K encoding and big-integer PVQ indices per RFC 6716 §5.3.4. Validate: encode high-energy fullband frames, verify round-trip.
 
@@ -110,17 +110,17 @@
 
 - [x] **F-28: PVQ Encode mutates caller's input spectrum** — `pvq.go:172-188` — Data aliasing — `allocatePulses()` normalizes the input `x` slice in place. Callers who retain a reference to the spectrum see corrupted values after encoding. **Remediation**: Copy `x` before normalization. Validate: encode PVQ, verify original slice unchanged.
 
-- [ ] **F-29: Code-3 flate decode ignores padding flag** — `decoder.go:1010-1023` — Logic — Arbitrary-frame flate path reads the M byte but ignores padding flag/length bytes per RFC 6716 §3.2.5. Padded code-3 packets are misparsed. **Remediation**: Parse and skip padding bytes before frame data. Validate: encode padded code-3 packet, decode successfully.
+- [x] **F-29: Code-3 flate decode ignores padding flag** — `decoder.go:1010-1023` — Logic — Arbitrary-frame flate path reads the M byte but ignores padding flag/length bytes per RFC 6716 §3.2.5. Padded code-3 packets are misparsed. **Remediation**: Parse and skip padding bytes before frame data. Validate: encode padded code-3 packet, decode successfully.
 
 - [x] **F-30: Hybrid Reset() doesn't reset CELT sub-state** — `hybrid.go:235-243,431-440` — API contract — `Reset()` clears SILK state but not CELT encoder/decoder overlap/history. Post-reset frames may contain stale CELT state. **Remediation**: Also reset CELT encoder/decoder state in hybrid `Reset()`. Validate: encode, reset, encode silence, verify no residual audio.
 
-- [ ] **F-31: SILK encoder Reset() incomplete** — `silk_frame.go:324-337` — API contract — `Reset()` does not reset `gainCoder`, `pitchEstimate`, `ltpAnalyzer`, or `excEncoder`. Post-reset encoding depends on previous stream's state. **Remediation**: Reset all sub-components. Validate: encode, reset, encode new content, verify no cross-stream artifacts.
+- [x] **F-31: SILK encoder Reset() incomplete** — `silk_frame.go:324-337` — API contract — `Reset()` does not reset `gainCoder`, `pitchEstimate`, `ltpAnalyzer`, or `excEncoder`. Post-reset encoding depends on previous stream's state. **Remediation**: Reset all sub-components. Validate: encode, reset, encode new content, verify no cross-stream artifacts.
 
 - [ ] **F-32: CELT stereo accepted but operates mono-only** — `celt_frame.go:63-65,127-129,455-461` — API contract — `NewCELTEncoder`/`NewCELTDecoder` accept `Channels==2` but all encode/decode operations process `FrameSize` (mono length) samples only. **Remediation**: Either reject channels>1 or implement per-channel processing. Validate: stereo CELT encode/decode produces correct sample count.
 
 - [ ] **F-33: SILK stereo accepted but operates mono-only** — `silk_frame.go:89-90,140-143,630` — API contract — Same issue as F-32 for SILK codec. Stereo is accepted but all operations are mono. **Remediation**: Either reject channels>1 at construction or implement stereo. Validate: stereo SILK round-trip.
 
-- [ ] **F-34: CELT encoder TF always non-transient** — `celt_frame.go:209-211,364-365` — Logic — Encoder always writes TF bits as non-transient (`false`), but decoder branches on `isTransient` for TF decoding. If a packet claims transient (which never happens from this encoder, but could from external packets), TF decode uses wrong table. **Remediation**: Implement transient detection or document limitation. Validate: N/A (encoder-only limitation).
+- [x] **F-34: CELT encoder TF always non-transient** — `celt_frame.go:209-211,364-365` — Logic — Encoder always writes TF bits as non-transient (`false`), but decoder branches on `isTransient` for TF decoding. If a packet claims transient (which never happens from this encoder, but could from external packets), TF decode uses wrong table. **Remediation**: Implement transient detection or document limitation. Validate: N/A (encoder-only limitation).
 
 ### LOW
 

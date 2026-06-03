@@ -892,3 +892,131 @@ func absDiff(a, b float64) float64 {
 	}
 	return b - a
 }
+
+// buildPaddedPacket takes a valid VBR code-3 packet (no padding) and inserts
+// padding: it sets the p-flag in the M byte, injects padLenBytes immediately
+// after the M byte, and appends paddingLen zero-bytes at the tail.
+func buildPaddedPacket(base []byte, paddingLen int) []byte {
+	if len(base) < 2 {
+		panic("base packet too short")
+	}
+	// Encode the padding length as 255-extended bytes (RFC 6716 §3.2.1):
+	// each 255 byte adds 255; a final byte < 255 gives the remainder.
+	var padLenBytes []byte
+	rem := paddingLen
+	for rem >= 255 {
+		padLenBytes = append(padLenBytes, 255)
+		rem -= 255
+	}
+	padLenBytes = append(padLenBytes, byte(rem))
+
+	// Build the new packet: [TOC] [M|0x40] [padLenBytes] [original frame data] [padding zeros]
+	out := make([]byte, 0, len(base)+len(padLenBytes)+paddingLen)
+	out = append(out, base[0])        // TOC unchanged
+	out = append(out, base[1]|0x40)   // M byte with p-flag
+	out = append(out, padLenBytes...) // padding length encoding
+	out = append(out, base[2:]...)    // original frame data (lengths + payloads)
+	out = append(out, make([]byte, paddingLen)...) // padding zeros
+	return out
+}
+
+// TestDecodeCode3Padding verifies that code-3 packets with the padding flag set
+// are decoded correctly, including multi-byte 255-extended padding lengths.
+func TestDecodeCode3Padding(t *testing.T) {
+	t.Parallel()
+
+	enc, err := NewEncoder(48000, 1)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+	if err := enc.SetFrameDuration(FrameDuration5ms); err != nil {
+		t.Fatalf("SetFrameDuration: %v", err)
+	}
+	frameSize := FrameDuration5ms.Samples(48000)
+
+	// Encode 3 frames to get a valid VBR code-3 base packet.
+	frames := make([][]int16, 3)
+	for i := range frames {
+		frames[i] = make([]int16, frameSize)
+		for j := range frames[i] {
+			theta := 2.0 * 3.14159265 * 440.0 * float64(j+i*frameSize) / 48000.0
+			frames[i][j] = int16(8000.0 * sinTable(theta))
+		}
+	}
+	base, err := enc.EncodeMultipleFrames(frames)
+	if err != nil {
+		t.Fatalf("EncodeMultipleFrames: %v", err)
+	}
+
+	// Decode the unpadded packet to get the reference sample count.
+	refSamples, err := Decode(base)
+	if err != nil {
+		t.Fatalf("Decode base packet: %v", err)
+	}
+	wantSamples := len(refSamples)
+
+	tests := []struct {
+		name       string
+		paddingLen int
+	}{
+		{"single-byte padding (5 bytes)", 5},
+		{"single-byte padding (10 bytes)", 10},
+		{"multi-byte 255-extended padding (260 bytes)", 260}, // 255 + 5
+		{"multi-byte 255-extended padding (510 bytes)", 510}, // 255+255+0
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			padded := buildPaddedPacket(base, tt.paddingLen)
+
+			got, err := Decode(padded)
+			if err != nil {
+				t.Fatalf("Decode padded packet: %v", err)
+			}
+			if len(got) != wantSamples {
+				t.Errorf("sample count: got %d, want %d", len(got), wantSamples)
+			}
+		})
+	}
+}
+
+// TestDecodeCode3PaddingMalformed verifies that code-3 packets with malformed
+// padding (padding length exceeds available data) are rejected.
+func TestDecodeCode3PaddingMalformed(t *testing.T) {
+	t.Parallel()
+
+	enc, err := NewEncoder(48000, 1)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+	if err := enc.SetFrameDuration(FrameDuration5ms); err != nil {
+		t.Fatalf("SetFrameDuration: %v", err)
+	}
+	frameSize := FrameDuration5ms.Samples(48000)
+
+	frames := make([][]int16, 3)
+	for i := range frames {
+		frames[i] = make([]int16, frameSize)
+	}
+	base, err := enc.EncodeMultipleFrames(frames)
+	if err != nil {
+		t.Fatalf("EncodeMultipleFrames: %v", err)
+	}
+
+	// Craft a packet where the declared padding length (200) exceeds the total
+	// remaining bytes after the padding-length byte, so frameDataEnd <= offset.
+	// Structure: [TOC] [M byte w/ p-flag, 1 frame] [0xC8 = 200 padding] [1 byte frame data]
+	// Total: 4 bytes. frameDataEnd = 4 - 200 = -196 <= 3 (offset), rejected.
+	tocByte := base[0] // reuse same TOC config
+	malformed := []byte{
+		tocByte,
+		byte(1) | 0x40, // 1 frame, padding flag set, VBR not set (CBR)
+		200,            // declare 200 bytes of padding
+		0x42,           // 1 byte of frame "data" (nowhere near 200 bytes of padding)
+	}
+	if _, err := Decode(malformed); err == nil {
+		t.Error("expected error for over-sized padding, got nil")
+	}
+}

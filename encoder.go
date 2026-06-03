@@ -886,8 +886,7 @@ func (e *Encoder) EncodeMultipleFrames(frames [][]int16) ([]byte, error) {
 	}
 
 	// Build frame code 3 packet
-	// Format: [TOC][M byte][len1][frame1][len2][frame2]...[lenM-1][frameM-1][frameM]
-	// RFC 6716 §3.2.5: M byte layout is |v|p|     M     |
+	// Format per RFC 6716 §3.2.5: [TOC][M byte][len1][len2]...[lenM-1][frame1][frame2]...[frameM]
 	// v (VBR flag) is bit 7, p (padding flag) is bit 6, M (frame count) is bits 0-5
 	isStereo := e.channels == 2
 	config := configForSampleRateAndDuration(e.sampleRate, e.frameDuration)
@@ -896,35 +895,39 @@ func (e *Encoder) EncodeMultipleFrames(frames [][]int16) ([]byte, error) {
 	// M byte: VBR=1 (bit 7), padding=0 (bit 6), frame count (bits 0-5)
 	mByte := byte(len(frames)) | 0x80 // VBR mode, no padding
 
-	// Calculate total size
+	// First pass: calculate total size and encode all frame lengths
+	lengthBytes := make([][]byte, len(payloads)-1)
 	totalSize := 2 // TOC + M byte
 	for i := 0; i < len(payloads)-1; i++ {
 		lenBytes, err := encodeFrameLength(len(payloads[i]))
 		if err != nil {
 			return nil, fmt.Errorf("encode frame %d length: %w", i, err)
 		}
+		lengthBytes[i] = lenBytes
 		totalSize += len(lenBytes)
+	}
+	
+	// Add all frame payload sizes
+	for i := 0; i < len(payloads); i++ {
 		totalSize += len(payloads[i])
 	}
-	totalSize += len(payloads[len(payloads)-1]) // Last frame (no length prefix)
 
 	result := make([]byte, totalSize)
 	result[0] = byte(toc)
 	result[1] = mByte
 
+	// Second pass: write all lengths first
 	offset := 2
-	for i := 0; i < len(payloads)-1; i++ {
-		lenBytes, err := encodeFrameLength(len(payloads[i]))
-		if err != nil {
-			return nil, fmt.Errorf("encode frame %d length: %w", i, err)
-		}
-		copy(result[offset:], lenBytes)
-		offset += len(lenBytes)
+	for i := 0; i < len(lengthBytes); i++ {
+		copy(result[offset:], lengthBytes[i])
+		offset += len(lengthBytes[i])
+	}
+	
+	// Third pass: write all frame payloads
+	for i := 0; i < len(payloads); i++ {
 		copy(result[offset:], payloads[i])
 		offset += len(payloads[i])
 	}
-	// Last frame (no length prefix)
-	copy(result[offset:], payloads[len(payloads)-1])
 
 	return result, nil
 }
