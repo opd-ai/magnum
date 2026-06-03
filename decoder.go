@@ -601,7 +601,8 @@ func (d *Decoder) interleaveStereoSamples(left, right []float64, out []int16) in
 
 	for i := 0; i < n; i++ {
 		out[i*2] = clampToInt16(left[i] * 32767.0)
-		out[i*2+1] = clampToInt16(right[i] * 32767.0)
+		// CELT dual-mono decoder inverts right channel, so negate it back
+		out[i*2+1] = clampToInt16(right[i] * -32767.0)
 	}
 	return numSamples
 }
