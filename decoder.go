@@ -604,15 +604,15 @@ func (d *Decoder) interleaveStereoSamples(left, right []float64, out []int16, ne
 
 	for i := 0; i < n; i++ {
 		out[i*2] = clampToInt16(left[i] * 32767.0)
+		
+		// In dual-mono mode (negateRight=true), the CELT decoder produces inverted right channel samples.
+		// This appears to be a quirk of the current CELT implementation.
+		// In mid-side mode (negateRight=false), no inversion correction is needed.
+		rightValue := right[i]
 		if negateRight {
-			// In dual-mono mode, the CELT decoder produces inverted right channel samples.
-			// This appears to be a quirk of the current CELT implementation.
-			// Negate the right channel samples to correct the polarity.
-			out[i*2+1] = clampToInt16(-right[i] * 32767.0)
-		} else {
-			// In mid/side mode, no inversion correction is needed.
-			out[i*2+1] = clampToInt16(right[i] * 32767.0)
+			rightValue = -rightValue
 		}
+		out[i*2+1] = clampToInt16(rightValue * 32767.0)
 	}
 	return numSamples
 }
