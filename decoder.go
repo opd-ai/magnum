@@ -567,7 +567,9 @@ func (d *Decoder) decodeCELTStereoSingleFrame(payload []byte, out []int16) (int,
 	}
 
 	// Interleave stereo samples
-	return d.interleaveStereoSamples(ch1Samples, ch2Samples, out), nil
+	// In dual-mono mode (not mid/side), the CELT decoder inverts the right channel,
+	// so we need to negate it back. In mid/side mode, no inversion is needed.
+	return d.interleaveStereoSamples(ch1Samples, ch2Samples, out, !d.useMidSide), nil
 }
 
 // convertFromMidSide converts M/S samples back to L/R stereo.
@@ -587,8 +589,9 @@ func convertFromMidSide(mid, side []float64) (left, right []float64) {
 }
 
 // interleaveStereoSamples interleaves left and right channel samples into out.
+// If negateRight is true, the right channel samples are negated (used for dual-mono mode).
 // Returns the total number of samples written (len(left) + len(right)).
-func (d *Decoder) interleaveStereoSamples(left, right []float64, out []int16) int {
+func (d *Decoder) interleaveStereoSamples(left, right []float64, out []int16, negateRight bool) int {
 	n := len(left)
 	if len(right) < n {
 		n = len(right)
@@ -601,10 +604,15 @@ func (d *Decoder) interleaveStereoSamples(left, right []float64, out []int16) in
 
 	for i := 0; i < n; i++ {
 		out[i*2] = clampToInt16(left[i] * 32767.0)
-		// CELT dual-mono decoder produces inverted right channel samples for certain input patterns.
-		// This appears to be a quirk of the current CELT implementation.
-		// Negate the right channel samples to correct the polarity.
-		out[i*2+1] = clampToInt16(-right[i] * 32767.0)
+		if negateRight {
+			// In dual-mono mode, the CELT decoder produces inverted right channel samples.
+			// This appears to be a quirk of the current CELT implementation.
+			// Negate the right channel samples to correct the polarity.
+			out[i*2+1] = clampToInt16(-right[i] * 32767.0)
+		} else {
+			// In mid/side mode, no inversion correction is needed.
+			out[i*2+1] = clampToInt16(right[i] * 32767.0)
+		}
 	}
 	return numSamples
 }
