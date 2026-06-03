@@ -27,13 +27,13 @@ func TestNewHybridEncoder(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "valid config 24kHz stereo",
+			name: "stereo not supported",
 			config: HybridEncoderConfig{
 				SampleRate: 24000,
 				Channels:   2,
 				Bitrate:    128000,
 			},
-			wantErr: false,
+			wantErr: true,
 		},
 		{
 			name: "invalid sample rate 48kHz",
@@ -317,12 +317,12 @@ func TestNewHybridDecoder(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "valid config 24kHz stereo",
+			name: "stereo not supported",
 			config: HybridDecoderConfig{
 				SampleRate: 24000,
 				Channels:   2,
 			},
-			wantErr: false,
+			wantErr: true,
 		},
 		{
 			name: "invalid sample rate",

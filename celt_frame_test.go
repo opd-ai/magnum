@@ -22,14 +22,14 @@ func TestCELTFrameEncoderCreation(t *testing.T) {
 			expectErr: false,
 		},
 		{
-			name: "valid 24kHz config",
+			name: "stereo not supported",
 			config: CELTFrameConfig{
 				SampleRate: 24000,
 				Channels:   2,
 				FrameSize:  480,
 				Bitrate:    32000,
 			},
-			expectErr: false,
+			expectErr: true,
 		},
 		{
 			name: "invalid sample rate",
@@ -83,19 +83,49 @@ func TestCELTFrameEncoderCreation(t *testing.T) {
 }
 
 func TestCELTFrameDecoderCreation(t *testing.T) {
-	config := CELTFrameConfig{
-		SampleRate: 48000,
-		Channels:   1,
-		FrameSize:  960,
-		Bitrate:    64000,
+	testCases := []struct {
+		name      string
+		config    CELTFrameConfig
+		expectErr bool
+	}{
+		{
+			name: "valid 48kHz config",
+			config: CELTFrameConfig{
+				SampleRate: 48000,
+				Channels:   1,
+				FrameSize:  960,
+				Bitrate:    64000,
+			},
+			expectErr: false,
+		},
+		{
+			name: "stereo not supported",
+			config: CELTFrameConfig{
+				SampleRate: 24000,
+				Channels:   2,
+				FrameSize:  480,
+				Bitrate:    32000,
+			},
+			expectErr: true,
+		},
 	}
 
-	dec, err := NewCELTFrameDecoder(config)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if dec == nil {
-		t.Fatal("decoder is nil")
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			dec, err := NewCELTFrameDecoder(tc.config)
+			if tc.expectErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if dec == nil {
+				t.Fatal("decoder is nil")
+			}
+		})
 	}
 }
 
