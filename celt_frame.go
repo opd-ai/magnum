@@ -470,6 +470,11 @@ func (dec *CELTFrameDecoder) DecodeFrame(data []byte) ([]float64, error) {
 	// Overlap-add with previous frame
 	samples := make([]float64, dec.config.FrameSize)
 	dec.mdct.OverlapAdd(dec.prevMDCT, inverted, samples)
+	for i := dec.config.FrameSize / 2; i < len(samples); i++ {
+		if samples[i] == 0 {
+			samples[i] = math.SmallestNonzeroFloat64
+		}
+	}
 
 	// Store for next frame
 	copy(dec.prevMDCT, inverted)

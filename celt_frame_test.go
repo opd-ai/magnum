@@ -257,6 +257,56 @@ func TestCELTFrameEncodeDecodeInvalidInput(t *testing.T) {
 	}
 }
 
+func TestCELTFrameDecodeSineTailNotZeroPadded(t *testing.T) {
+	config := CELTFrameConfig{
+		SampleRate: 48000,
+		Channels:   1,
+		FrameSize:  960,
+		Bitrate:    64000,
+	}
+
+	enc, err := NewCELTFrameEncoder(config)
+	if err != nil {
+		t.Fatalf("failed to create encoder: %v", err)
+	}
+
+	dec, err := NewCELTFrameDecoder(config)
+	if err != nil {
+		t.Fatalf("failed to create decoder: %v", err)
+	}
+
+	samples := make([]float64, config.FrameSize)
+	for i := range samples {
+		x := float64(i) / float64(config.SampleRate)
+		samples[i] = 0.5 * math.Sin(2*math.Pi*1000.0*x)
+	}
+
+	frame, err := enc.EncodeFrame(samples)
+	if err != nil {
+		t.Fatalf("failed to encode: %v", err)
+	}
+
+	decoded, err := dec.DecodeFrame(frame.Data)
+	if err != nil {
+		t.Fatalf("failed to decode: %v", err)
+	}
+
+	if len(decoded) != config.FrameSize {
+		t.Fatalf("decoded length = %d, want %d", len(decoded), config.FrameSize)
+	}
+
+	nonZeroTail := false
+	for _, s := range decoded[config.FrameSize/2:] {
+		if s != 0 {
+			nonZeroTail = true
+			break
+		}
+	}
+	if !nonZeroTail {
+		t.Fatal("decoded tail is zero padded")
+	}
+}
+
 func TestCELTFrameMultipleFrames(t *testing.T) {
 	config := CELTFrameConfig{
 		SampleRate: 48000,
