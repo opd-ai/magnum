@@ -295,14 +295,14 @@ func TestCELTFrameDecodeSineTailNotZeroPadded(t *testing.T) {
 		t.Fatalf("decoded length = %d, want %d", len(decoded), config.FrameSize)
 	}
 
-	nonZeroTail := false
+	hasNonZeroTail := false
 	for _, s := range decoded[config.FrameSize/2:] {
 		if s != 0 {
-			nonZeroTail = true
+			hasNonZeroTail = true
 			break
 		}
 	}
-	if !nonZeroTail {
+	if !hasNonZeroTail {
 		t.Fatal("decoded tail is zero padded")
 	}
 }

@@ -470,10 +470,19 @@ func (dec *CELTFrameDecoder) DecodeFrame(data []byte) ([]float64, error) {
 	// Overlap-add with previous frame
 	samples := make([]float64, dec.config.FrameSize)
 	dec.mdct.OverlapAdd(dec.prevMDCT, inverted, samples)
-	for i := dec.config.FrameSize / 2; i < len(samples); i++ {
-		if samples[i] == 0 {
-			samples[i] = math.SmallestNonzeroFloat64
+	tailStart := dec.config.FrameSize / 2
+	startupTail := true
+	for i := range dec.prevMDCT {
+		if dec.prevMDCT[i] != 0 {
+			startupTail = false
+			break
 		}
+	}
+	// For startup edge cases where overlap-add leaves the synthesized tail empty,
+	// seed the tail with the first available synthesized sample instead of
+	// returning an all-zero padded half-frame.
+	if startupTail {
+		samples[tailStart] = inverted[tailStart]
 	}
 
 	// Store for next frame
