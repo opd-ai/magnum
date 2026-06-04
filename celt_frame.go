@@ -468,7 +468,7 @@ func (dec *CELTFrameDecoder) DecodeFrame(data []byte) ([]float64, error) {
 	inverted := dec.mdct.Inverse(mdctCoeffs)
 
 	// Overlap-add with previous frame
-	samples := make([]float64, dec.config.FrameSize/2)
+	samples := make([]float64, dec.config.FrameSize)
 	dec.mdct.OverlapAdd(dec.prevMDCT, inverted, samples)
 
 	// Store for next frame
