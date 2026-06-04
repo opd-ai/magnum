@@ -98,7 +98,7 @@
 
 - [x] **F-23: BandEnd panics for band==NumCELTBands** — `band_energy.go:135-139` — Boundary safety — Guard `band > NumCELTBands` allows `band == 21`; accessing `celtBands[22]` on a 22-element array causes index-out-of-range panic. **Remediation**: Change guard to `band >= NumCELTBands`. Validate: `BandEnd(21)` should return -1.
 
-- [x] **F-24: CELT decoder returns half-length output** — `celt_frame.go:455-461` — API contract — `DecodeFrame` returns `FrameSize/2` samples instead of `FrameSize`. A 20ms 48 kHz frame (960 samples) decodes to only 480 samples. **Remediation**: Return full `FrameSize` samples from MDCT synthesis. Validate: decode CELT frame, verify `len(output) == frameSize`.
+- [ ] **F-24: CELT decoder returns half-length output** — `celt_frame.go:470-477` — API contract — `DecodeFrame` returns `FrameSize/2` samples instead of `FrameSize`. A 20ms 48 kHz frame (960 samples) decodes to only 480 samples. **Remediation**: Return full `FrameSize` samples from MDCT synthesis. Validate: decode CELT frame, verify `len(output) == frameSize`.
 
 - [x] **F-25: SetFrameDuration panics with active SILK on 40/60ms** — `encoder.go:377-386` — Logic/Boundary — `SetFrameDuration` mutates `config.FrameSize` but doesn't rebuild SILK internals. SILK subframe logic may access out-of-bounds on non-20ms frames. **Remediation**: Rebuild SILK encoder state when frame duration changes. Validate: `EnableSILK(); SetFrameDuration(40); Encode(...)`.
 
